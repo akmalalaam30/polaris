@@ -25,6 +25,7 @@ from app.api import (
     routes_navigation,
     routes_risk,
     routes_sea_ice,
+    routes_weather,
 )
 from app.config import APP_TITLE, APP_VERSION, PROJECT_ROOT, get_settings
 from app.database.connection import check_connection
@@ -65,6 +66,7 @@ TAGS_METADATA = [
     {"name": "health", "description": "Service health, readiness and runtime configuration."},
     {"name": "sea-ice", "description": "Observed sea-ice conditions and machine-learning forecasts."},
     {"name": "icebergs", "description": "Tracked Antarctic icebergs and physics-based drift trajectories."},
+    {"name": "weather", "description": "Live atmospheric and marine conditions, and layer freshness."},
     {"name": "risk", "description": "Spatial navigation risk grid and point assessments."},
     {"name": "navigation", "description": "Graph-based route optimisation between Antarctic locations."},
     {"name": "dashboard", "description": "Aggregated status, model registry and ingestion audit trail."},
@@ -257,6 +259,7 @@ prefix = settings.api_prefix
 app.include_router(routes_health.router, prefix=prefix)
 app.include_router(routes_sea_ice.router, prefix=prefix)
 app.include_router(routes_icebergs.router, prefix=prefix)
+app.include_router(routes_weather.router, prefix=prefix)
 app.include_router(routes_risk.router, prefix=prefix)
 app.include_router(routes_navigation.router, prefix=prefix)
 app.include_router(routes_dashboard.router, prefix=prefix)
@@ -285,6 +288,9 @@ def api_index():
             f"{prefix}/sea-ice/extent",
             f"{prefix}/icebergs",
             f"{prefix}/icebergs/{{iceberg_id}}/trajectory",
+            f"{prefix}/weather/stations",
+            f"{prefix}/weather/point?latitude=-66&longitude=40",
+            f"{prefix}/weather/current",
             f"{prefix}/risk/map",
             f"{prefix}/risk/point?latitude=-65&longitude=40",
             f"{prefix}/route/optimize  (POST)",

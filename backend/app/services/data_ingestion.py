@@ -64,6 +64,8 @@ SOURCE_NSIDC = "NSIDC/G02135"
 SOURCE_USNIC = "USNIC"
 SOURCE_ERA5_CDS = "ERA5/CDS"
 SOURCE_ERA5_MIRROR = "ERA5/open-archive"
+SOURCE_LIVE_IFS = "ECMWF-IFS/live-forecast"
+SOURCE_LIVE_MARINE = "ECMWF-WAM/live-marine"
 SOURCE_CMEMS = "CMEMS"
 SOURCE_MARINE_MIRROR = "CMEMS/open-marine"
 
@@ -400,6 +402,200 @@ class ERA5Client:
             except Exception as exc:
                 log.warning("ERA5 CDS path failed (%s); trying open archive", exc.__class__.__name__)
         return self.fetch_via_mirror(day, grid)
+
+
+# ---------------------------------------------------------------------------
+# Live atmospheric and marine conditions
+# ---------------------------------------------------------------------------
+class LiveWeatherClient:
+    """Current and short-range forecast conditions.
+
+    ERA5 is a *reanalysis*: assimilated after the fact and published with about
+    five days of latency.  That is the right product for training a model on a
+    year of consistent history, and the wrong one for an operational display -
+    a navigation system showing six-day-old wind is describing the past.
+
+    This client serves the ECMWF IFS forecast instead, valid now and running
+    several days ahead, recorded under its own ``source`` so it is never
+    conflated with the reanalysis.
+    """
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or get_settings()
+
+    def available(self) -> bool:
+        return bool(self.settings.allow_open_mirrors)
+
+    def fetch_current_grid(self, grid: GridSpec) -> tuple[dict[str, np.ndarray], datetime, str]:
+        """Current atmospheric conditions interpolated onto the analysis grid."""
+        if not self.available():
+            raise DataUnavailableError(
+                "Live weather requires ALLOW_OPEN_MIRRORS=true (the forecast endpoint needs no key)"
+            )
+        lats, lons = _mirror_sample_points(grid, self.settings)
+        url = (
+            f"{self.settings.weather_live_url}?"
+            f"latitude={','.join(f'{v:.4f}' for v in lats)}&"
+            f"longitude={','.join(f'{v:.4f}' for v in lons)}&"
+            "current=temperature_2m,wind_speed_10m,wind_direction_10m,pressure_msl&"
+            f"wind_speed_unit=ms&models={self.settings.weather_live_model}"
+        )
+        payload = _get_json(url, self.settings)
+        records = payload if isinstance(payload, list) else [payload]
+
+        pt_lat: list[float] = []
+        pt_lon: list[float] = []
+        vals: dict[str, list[float]] = {"u10": [], "v10": [], "t2m": [], "msl": []}
+        valid_at: datetime | None = None
+        for rec in records:
+            cur = rec.get("current") or {}
+            speed, direction = cur.get("wind_speed_10m"), cur.get("wind_direction_10m")
+            if speed is None or direction is None:
+                continue
+            if valid_at is None and cur.get("time"):
+                valid_at = pd.to_datetime(cur["time"], utc=True).to_pydatetime()
+            rad = math.radians(float(direction))
+            pt_lat.append(float(rec["latitude"]))
+            pt_lon.append(float(rec["longitude"]))
+            vals["u10"].append(-float(speed) * math.sin(rad))
+            vals["v10"].append(-float(speed) * math.cos(rad))
+            vals["t2m"].append(float(cur.get("temperature_2m") or float("nan")))
+            vals["msl"].append(float(cur.get("pressure_msl") or float("nan")))
+
+        if len(pt_lat) < 4:
+            raise DataUnavailableError("Live weather returned too few valid points")
+        fields = _points_to_grid(pt_lat, pt_lon, vals, grid)
+        return fields, (valid_at or datetime.now(timezone.utc)), SOURCE_LIVE_IFS
+
+    def fetch_points(
+        self, points: Sequence[tuple[str, float, float]], forecast_hours: int | None = None
+    ) -> list[dict]:
+        """Current conditions plus an hourly outlook at named positions."""
+        if not points:
+            return []
+        if not self.available():
+            # ALLOW_OPEN_MIRRORS=false must actually prevent the call, not just
+            # the gridded one - otherwise the setting silently means nothing
+            # here and an operator who disabled open endpoints still hits them.
+            raise DataUnavailableError(
+                "Live weather requires ALLOW_OPEN_MIRRORS=true (the forecast endpoint needs no key)"
+            )
+        forecast_hours = forecast_hours or self.settings.station_forecast_hours
+        days = max(1, min(7, math.ceil(forecast_hours / 24)))
+        lat = ",".join(f"{p[1]:.4f}" for p in points)
+        lon = ",".join(f"{p[2]:.4f}" for p in points)
+
+        atmos = _get_json(
+            f"{self.settings.weather_live_url}?latitude={lat}&longitude={lon}&"
+            "current=temperature_2m,wind_speed_10m,wind_direction_10m,pressure_msl,"
+            "relative_humidity_2m,cloud_cover&"
+            "hourly=temperature_2m,wind_speed_10m,wind_direction_10m,pressure_msl&"
+            f"wind_speed_unit=ms&forecast_days={days}&models={self.settings.weather_live_model}",
+            self.settings,
+        )
+        atmos_records = atmos if isinstance(atmos, list) else [atmos]
+
+        marine_records: list[dict] = []
+        try:
+            marine = _get_json(
+                f"{self.settings.marine_live_url}?latitude={lat}&longitude={lon}&"
+                "current=wave_height,wave_period,ocean_current_velocity,"
+                "ocean_current_direction,sea_surface_temperature&"
+                f"forecast_days={days}",
+                self.settings,
+            )
+            marine_records = marine if isinstance(marine, list) else [marine]
+        except Exception as exc:  # noqa: BLE001 - marine is optional at a land station
+            log.warning("Live marine conditions unavailable: %s", exc)
+
+        out: list[dict] = []
+        for k, (name, plat, plon) in enumerate(points):
+            atm = atmos_records[k].get("current", {}) if k < len(atmos_records) else {}
+            mar = marine_records[k].get("current", {}) if k < len(marine_records) else {}
+            hourly = atmos_records[k].get("hourly", {}) if k < len(atmos_records) else {}
+            speed = atm.get("wind_speed_10m")
+            entry = {
+                "name": name,
+                "latitude": plat,
+                "longitude": plon,
+                "observed_at": (
+                    pd.to_datetime(atm["time"], utc=True).to_pydatetime() if atm.get("time") else None
+                ),
+                "air_temperature_c": atm.get("temperature_2m"),
+                "wind_speed_m_s": speed,
+                "wind_direction_deg": atm.get("wind_direction_10m"),
+                "beaufort_force": _beaufort(speed),
+                "mean_sea_level_pressure_hpa": atm.get("pressure_msl"),
+                "relative_humidity_pct": atm.get("relative_humidity_2m"),
+                "cloud_cover_pct": atm.get("cloud_cover"),
+                # Marine values are null at a point inside the pack: waves are
+                # not defined under sea ice. That is physics, not a gap.
+                "significant_wave_height_m": mar.get("wave_height"),
+                "wave_period_s": mar.get("wave_period"),
+                "ocean_current_speed_m_s": mar.get("ocean_current_velocity"),
+                "ocean_current_direction_deg": mar.get("ocean_current_direction"),
+                "sea_surface_temperature_c": mar.get("sea_surface_temperature"),
+                "source": SOURCE_LIVE_IFS,
+                "marine_source": SOURCE_LIVE_MARINE if mar else None,
+                "forecast": _hourly_outlook(hourly, forecast_hours),
+            }
+            entry["freezing_spray_risk"] = _freezing_spray(entry)
+            out.append(entry)
+        return out
+
+
+def _beaufort(speed_m_s: float | None) -> int | None:
+    """Beaufort force from wind speed - the scale bridge crews actually use."""
+    if speed_m_s is None:
+        return None
+    limits = [0.5, 1.5, 3.3, 5.5, 7.9, 10.7, 13.8, 17.1, 20.7, 24.4, 28.4, 32.6]
+    return next((i for i, lim in enumerate(limits) if speed_m_s < lim), 12)
+
+
+def _freezing_spray(entry: dict) -> str | None:
+    """Qualitative freezing-spray hazard.
+
+    Superstructure icing needs cold air, open water and enough wind to generate
+    spray; the classical predictors combine exactly those.  Reported
+    qualitatively because POLARIS does not compute an icing accretion rate.
+    """
+    t = entry.get("air_temperature_c")
+    w = entry.get("wind_speed_m_s")
+    sst = entry.get("sea_surface_temperature_c")
+    if t is None or w is None:
+        return None
+    if t > -2.0 or w < 9.0:
+        return "none"
+    if sst is not None and sst > 5.0:
+        return "none"
+    if t < -12.0 and w > 17.0:
+        return "severe"
+    if t < -7.0 and w > 13.0:
+        return "moderate"
+    return "light"
+
+
+def _hourly_outlook(hourly: dict, hours: int) -> list[dict]:
+    """Trim the hourly forecast to the requested window."""
+    times = (hourly or {}).get("time") or []
+    out = []
+    for i, stamp in enumerate(times[:hours]):
+        out.append(
+            {
+                "valid_at": pd.to_datetime(stamp, utc=True).to_pydatetime(),
+                "air_temperature_c": _at(hourly.get("temperature_2m"), i),
+                "wind_speed_m_s": _at(hourly.get("wind_speed_10m"), i),
+                "wind_direction_deg": _at(hourly.get("wind_direction_10m"), i),
+                "mean_sea_level_pressure_hpa": _at(hourly.get("pressure_msl"), i),
+            }
+        )
+    return out
+
+
+def _at(series, index):
+    if not series or index >= len(series):
+        return None
+    return series[index]
 
 
 # ---------------------------------------------------------------------------
@@ -940,13 +1136,26 @@ def ingest_weather(
         if demo:
             fields = DemoFieldGenerator(grid).weather(observed_at)
         else:
-            client = ERA5Client(settings)
-            if not client.available():
-                raise DataUnavailableError(
-                    "No ERA5 access configured: set ERA5_API_KEY, or enable ALLOW_OPEN_MIRRORS"
-                )
-            fields, source = client.fetch(day, grid, Path(settings.raw_data_dir) / "era5")
-            result.source = source
+            fields = None
+            # The operational layer wants conditions valid *now*. ERA5 is a
+            # reanalysis with ~5 days of latency, so the live IFS forecast is
+            # tried first and ERA5 is the fallback, not the other way round.
+            if settings.prefer_live_weather:
+                try:
+                    live = LiveWeatherClient(settings)
+                    if live.available():
+                        fields, observed_at, source = live.fetch_current_grid(grid)
+                        result.source = source
+                except Exception as exc:  # noqa: BLE001 - fall back to reanalysis
+                    log.warning("Live weather unavailable (%s); falling back to ERA5", exc)
+            if fields is None:
+                client = ERA5Client(settings)
+                if not client.available():
+                    raise DataUnavailableError(
+                        "No weather source available: set ERA5_API_KEY, or enable ALLOW_OPEN_MIRRORS"
+                    )
+                fields, source = client.fetch(day, grid, Path(settings.raw_data_dir) / "era5")
+                result.source = source
 
         speed = np.hypot(fields["u10"], fields["v10"])
         direction = (np.degrees(np.arctan2(-fields["u10"], -fields["v10"])) + 360.0) % 360.0
@@ -965,10 +1174,17 @@ def ingest_weather(
             },
             source=result.source,
             data_mode=settings.data_mode,
-            dataset_version="demo-1.0" if demo else "era5-single-levels",
+            dataset_version="demo-1.0" if demo else (
+                "ecmwf-ifs-forecast" if result.source == SOURCE_LIVE_IFS else "era5-single-levels"
+            ),
         )
         result.ingested = repo.upsert_weather(session, rows)
-        result.details = {"observed_at": observed_at.isoformat(), "cells": len(rows)}
+        age_h = (datetime.now(timezone.utc) - observed_at).total_seconds() / 3600.0
+        result.details = {
+            "observed_at": observed_at.isoformat(),
+            "age_hours": round(age_h, 1),
+            "cells": len(rows),
+        }
         if result.ingested == 0:
             result.status = "failed"
             result.message = "no weather cells ingested"

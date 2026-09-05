@@ -157,3 +157,28 @@ button:disabled { background: #8ea3b0; cursor: progress; }
 .dash-line span:first-child { color: #5a6c7a; }
 
 .leaflet-container { font: inherit; }
+
+/* --- live station conditions ------------------------------------------- */
+.stn {
+  border: 1px solid #dbe3e8;
+  border-left: 4px solid #14567a;
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 7px;
+}
+.stn h3 { margin: 0 0 3px; font-size: 12px; }
+.stn .when { font-size: 10px; color: #8a97a2; margin-bottom: 4px; }
+.stn dl { margin: 0; display: grid; grid-template-columns: auto auto; gap: 0 8px; }
+.stn dt { color: #5a6c7a; }
+.stn dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.stn .hazard { margin-top: 4px; font-size: 11px; padding: 2px 5px; border-radius: 3px; display: inline-block; }
+.hz-none { background: #e8f2ec; color: #1c6b46; }
+.hz-light { background: #fdf5e6; color: #7b4a12; }
+.hz-moderate { background: #fbe9d8; color: #8a4b16; }
+.hz-severe { background: #f7dede; color: #8c2f2f; }
+
+.fresh { display: flex; justify-content: space-between; gap: 6px; padding: 1px 0; }
+.fresh .age { font-variant-numeric: tabular-nums; }
+.age-live { color: #1c6b46; font-weight: 600; }
+.age-recent { color: #5a6c7a; }
+.age-stale { color: #8a6116; }

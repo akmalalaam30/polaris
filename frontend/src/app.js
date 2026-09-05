@@ -89,7 +89,7 @@ function showLegend(title, fn) {
 function initMap() {
   state.map = L.map('map', { preferCanvas: true, worldCopyJump: false })
     .setView([-64, 45], 3);
-  ['land', 'ice', 'risk', 'bergs', 'routes'].forEach((name) => {
+  ['land', 'ice', 'risk', 'bergs', 'stations', 'routes'].forEach((name) => {
     state.layers[name] = L.layerGroup().addTo(state.map);
   });
   state.layers.risk.remove();
@@ -390,6 +390,95 @@ const fmt = (v, digits) => (v === null || v === undefined ? 'n/a' : Number(v).to
 const pct = (v) => (v === null || v === undefined ? 'n/a' : `${(v * 100).toFixed(0)}%`);
 
 // ---------------------------------------------------------------------------
+// Live station conditions
+// ---------------------------------------------------------------------------
+const HAZARD_LABEL = {
+  none: 'no freezing spray',
+  light: 'light freezing spray',
+  moderate: 'moderate freezing spray',
+  severe: 'SEVERE freezing spray',
+};
+
+function windArrow(deg) {
+  // Meteorological direction is where the wind comes FROM; the arrow shows
+  // where it is going, which is what a navigator reads off a chart.
+  if (deg === null || deg === undefined) return '';
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  return dirs[Math.round(deg / 45) % 8];
+}
+
+async function loadStationWeather() {
+  const el = document.getElementById('stations');
+  state.layers.stations.clearLayers();
+  try {
+    const body = await api('/weather/stations?forecast_hours=24');
+    el.className = '';
+    el.innerHTML = body.stations.map((s) => {
+      const marine = s.significant_wave_height_m !== null
+        ? row('sea state', `${fmt(s.significant_wave_height_m, 1)} m, SST ${fmt(s.sea_surface_temperature_c, 1)}&deg;C`)
+        : row('sea state', '<span title="waves are not defined under sea ice">under ice</span>');
+      const hazard = s.freezing_spray_risk
+        ? `<div class="hazard hz-${s.freezing_spray_risk}">${HAZARD_LABEL[s.freezing_spray_risk]}</div>`
+        : '';
+      return `<div class="stn">
+        <h3>${s.display_name}</h3>
+        <div class="when">valid ${String(s.observed_at).slice(0, 16).replace('T', ' ')} UTC</div>
+        <dl>
+          ${row('air temp', `${fmt(s.air_temperature_c, 1)} &deg;C`)}
+          ${row('wind', `${fmt(s.wind_speed_m_s, 1)} m/s from ${windArrow(s.wind_direction_deg)} (F${s.beaufort_force === null ? '-' : s.beaufort_force})`)}
+          ${row('pressure', `${fmt(s.mean_sea_level_pressure_hpa, 0)} hPa`)}
+          ${marine}
+        </dl>
+        ${hazard}
+      </div>`;
+    }).join('');
+
+    body.stations.forEach((s) => {
+      const cold = s.air_temperature_c !== null && s.air_temperature_c < -10;
+      L.circleMarker([s.latitude, s.longitude], {
+        radius: 7, color: '#0f2b3d', weight: 2,
+        fillColor: cold ? '#bcd4e6' : '#f0c98a', fillOpacity: 0.95,
+      })
+        .bindPopup(
+          `<b>${s.display_name}</b><br>` +
+          `<small>${s.operator || ''}</small><br>` +
+          `valid ${String(s.observed_at).slice(0, 16).replace('T', ' ')} UTC<br>` +
+          `${fmt(s.air_temperature_c, 1)} &deg;C, wind ${fmt(s.wind_speed_m_s, 1)} m/s ` +
+          `from ${windArrow(s.wind_direction_deg)}<br>` +
+          `${fmt(s.mean_sea_level_pressure_hpa, 0)} hPa` +
+          (s.significant_wave_height_m !== null
+            ? `<br>Hs ${fmt(s.significant_wave_height_m, 1)} m` : '') +
+          `<br><small>${s.source}</small>`
+        )
+        .addTo(state.layers.stations);
+    });
+  } catch (err) {
+    el.innerHTML = `<span class="error">${err.message}</span>`;
+  }
+}
+
+async function loadFreshness() {
+  const el = document.getElementById('freshness');
+  try {
+    const body = await api('/weather/current');
+    const cls = (h) => (h === null ? '' : h < 3 ? 'age-live' : h < 48 ? 'age-recent' : 'age-stale');
+    const label = (h) => {
+      if (h === null || h === undefined) return 'no data';
+      if (h < 1) return 'live';
+      if (h < 48) return `${h.toFixed(0)} h ago`;
+      return `${(h / 24).toFixed(1)} days ago`;
+    };
+    el.className = '';
+    el.innerHTML = Object.entries(body.layers).map(([name, l]) =>
+      `<div class="fresh"><span>${name.replace('_', ' ')}</span>` +
+      `<span class="age ${cls(l.age_hours)}">${label(l.age_hours)}</span></div>`
+    ).join('');
+  } catch (err) {
+    el.innerHTML = `<span class="error">${err.message}</span>`;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Status panels
 // ---------------------------------------------------------------------------
 async function loadHealth() {
@@ -489,6 +578,7 @@ async function boot() {
   bindLayerToggle('layer-ice', 'ice');
   bindLayerToggle('layer-risk', 'risk', loadRisk);
   bindLayerToggle('layer-bergs', 'bergs');
+  bindLayerToggle('layer-stations', 'stations');
   document.getElementById('layer-tiles')
     .addEventListener('change', (e) => toggleTiles(e.target.checked));
   document.getElementById('ice-source').addEventListener('change', loadSeaIce);
@@ -507,8 +597,13 @@ async function boot() {
     loadStations().catch(console.error),
     loadSeaIce(),
     loadIcebergs(),
+    loadStationWeather(),
+    loadFreshness(),
     loadDashboard(),
   ]);
+
+  // Live conditions age in real time; refresh them without reloading the page.
+  setInterval(() => { loadStationWeather(); loadFreshness(); }, 10 * 60 * 1000);
 }
 
 document.addEventListener('DOMContentLoaded', boot);

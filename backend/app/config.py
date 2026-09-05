@@ -101,6 +101,18 @@ class Settings(BaseSettings):
     #: separately for the mirror so the two are never conflated.
     allow_open_mirrors: bool = True
     open_meteo_era5_url: str = "https://archive-api.open-meteo.com/v1/era5"
+    #: Live atmospheric forecast for the *operational* layer.  ERA5 is a
+    #: reanalysis with about five days of latency - the right product for
+    #: training on a year of consistent history, and the wrong one for telling a
+    #: master what the wind is doing tonight.  This endpoint serves the ECMWF
+    #: IFS forecast, valid now and out to several days.
+    weather_live_url: str = "https://api.open-meteo.com/v1/forecast"
+    weather_live_model: str = "ecmwf_ifs025"
+    marine_live_url: str = "https://marine-api.open-meteo.com/v1/marine"
+    #: Prefer the live forecast over ERA5 reanalysis for current conditions.
+    prefer_live_weather: bool = True
+    #: Hours of forecast retrieved for the station outlook.
+    station_forecast_hours: int = 72
     open_meteo_marine_url: str = "https://marine-api.open-meteo.com/v1/marine"
     #: Coarse sampling used when querying the point-based mirrors (degrees).
     mirror_sample_dlat: float = 2.0

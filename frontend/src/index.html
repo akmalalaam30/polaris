@@ -27,6 +27,7 @@
         <label><input type="checkbox" id="layer-ice" checked> Sea-ice concentration</label>
         <label><input type="checkbox" id="layer-risk"> Navigation risk</label>
         <label><input type="checkbox" id="layer-bergs" checked> Icebergs &amp; drift</label>
+        <label><input type="checkbox" id="layer-stations" checked> Stations &amp; live weather</label>
         <label><input type="checkbox" id="layer-tiles"> Basemap tiles (needs internet)</label>
         <div class="row">
           <label for="ice-source">Sea ice shown</label>
@@ -89,6 +90,16 @@
       <section>
         <h2>Results</h2>
         <div id="route-results" class="empty">No route computed yet.</div>
+      </section>
+
+      <section>
+        <h2>Live conditions</h2>
+        <div id="stations" class="empty">Loading...</div>
+      </section>
+
+      <section>
+        <h2>Data freshness</h2>
+        <div id="freshness" class="empty">Loading...</div>
       </section>
 
       <section>

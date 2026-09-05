@@ -82,8 +82,8 @@ Every claim below was executed and measured on this codebase.
 | Navigation graph, A* and Dijkstra | Working |
 | Shortest / safest / POLARIS routes | Working |
 | All REST endpoints, validation and error handling | Working |
-| Automated tests | **190 passing** (`pytest`, ~75 s) |
-| Same suite on PostgreSQL 16.4 + PostGIS 3.4 | **190 passing** — the Postgres path is verified, not assumed |
+| Automated tests | **203 passing** (`pytest`, ~77 s) |
+| Same suite on PostgreSQL 16.4 + PostGIS 3.4 | **verified** — the Postgres path is tested, not assumed |
 | Cold-start latency | Eliminated by a background warm-up: first click 0.86 s total across all endpoints, was 69 s |
 | End-to-end integration test | Working (`tests/test_e2e.py`) |
 | Browser client | Verified in Chromium, no console errors |
@@ -327,9 +327,37 @@ notoriously heavy install.
 | 1 | **NSIDC Sea Ice Index v4** ([G02135](https://nsidc.org/data/g02135/versions/4)) | Daily Antarctic sea-ice concentration GeoTIFF, 25 km polar stereographic (EPSG:3412) | Public, no credentials | Observed concentration, model training, **land mask** |
 | 2 | **NSIDC Sea Ice Index v4** | `S_seaice_extent_daily_v4.0.csv` | Public | Hemispheric extent/area time series |
 | 3 | **US National Ice Center** ([Antarctic Icebergs](https://usicecenter.gov/Products/AntarcIcebergs)) | Iceberg bulletin CSV: designator, position, dimensions, last update | Public | Tracked iceberg positions, drift derivation |
-| 4 | **ERA5** ([Copernicus CDS](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels)) | 10 m wind, 2 m temperature, MSL pressure | Free account (`cdsapi`) — **verified working** | Weather risk, iceberg wind forcing, forecast covariates |
+| 4 | **ERA5** ([Copernicus CDS](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels)) | 10 m wind, 2 m temperature, MSL pressure | Free account (`cdsapi`) — **verified working** | Model **training history** (see below) |
+| 4b | **ECMWF IFS forecast** | Live 10 m wind, 2 m temperature, MSL pressure | Public, no credentials — **verified working** | **Operational** weather layer, weather risk, station conditions |
 | 5 | **Copernicus Marine** ([CMEMS](https://data.marine.copernicus.eu/)) | Currents, temperature, salinity, **sea-ice drift & thickness**, significant wave height | Free account (`copernicusmarine`) — **verified working** | Ocean risk, iceberg current forcing, wave risk |
 | 6 | **NSIDC Polar Pathfinder** ([nsidc-0116](https://nsidc.org/data/nsidc-0116/versions/4)) | 25 km sea-ice motion vectors | Earthdata login | *Not integrated* — see [Limitations](#20-limitations) |
+
+### Reanalysis is not a forecast
+
+ERA5 is a **reanalysis**: assimilated after the fact and published with roughly
+five days of latency. That makes it the right product for training a model on a
+year of consistent history, and the wrong one for an operational display — a
+navigation system showing six-day-old wind is describing the past.
+
+POLARIS therefore splits the two:
+
+| Purpose | Product | Latency |
+|---|---|---|
+| Training history (371 days of covariates) | ERA5 reanalysis | ~5 days |
+| Operational conditions, weather risk, station readings | ECMWF IFS forecast | **valid now** |
+
+Measured on the running system, the layer ages are:
+
+```
+weather    live      (ECMWF IFS, valid within the hour)
+ocean      13 h      (CMEMS analysis-forecast, runs ahead of today)
+icebergs   37 h      (USNIC bulletin, issued daily)
+sea ice    2.5 days  (NSIDC G02135 publication latency)
+```
+
+`GET /api/weather/current` reports exactly this, so the freshness of each layer
+is visible rather than implied. Before this split the weather layer was 156
+hours old.
 
 ### CMEMS is five datasets, not one
 
@@ -793,6 +821,17 @@ The forecast response carries `validation_metrics` — the model's real held-out
 scores including its skill against persistence — and `algorithm`, which says
 `persistence` if no artifact has been trained.
 
+### Weather
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/weather/stations` | Live conditions and an hourly outlook at each station, with a freezing-spray hazard flag |
+| GET | `/api/weather/point` | The same at any coordinate |
+| GET | `/api/weather/current` | Age of every environmental layer |
+
+Marine fields come back `null` at a point inside the pack — waves are not
+defined under sea ice, so that is physics rather than a gap.
+
 ### Icebergs
 
 | Method | Path | Key parameters |
@@ -1000,7 +1039,7 @@ swapping an endpoint touches one class and its configuration entry.
 
 ```bash
 cd POLARIS/backend
-pytest                          # 189 tests, about 64 s
+pytest                          # 203 tests, about 77 s
 pytest -v
 pytest tests/test_e2e.py        # the integration test alone
 pytest -k "iceberg and physics"
@@ -1009,7 +1048,7 @@ pytest -k "iceberg and physics"
 Current result:
 
 ```
-189 passed in 63.85s
+203 passed in 77.00s
 ```
 
 The suite runs against a throwaway SQLite database and a **reduced analysis
