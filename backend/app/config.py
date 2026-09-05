@@ -155,6 +155,9 @@ class Settings(BaseSettings):
     api_port: int = 8000
     api_prefix: str = "/api"
     cors_origins: str = "*"
+    #: Precompute the land mask, forecasts, trajectories and risk grid at
+    #: startup so no user's first request pays the several-second build cost.
+    warm_cache_on_startup: bool = True
 
     @field_validator("log_level")
     @classmethod

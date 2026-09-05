@@ -398,3 +398,18 @@ def test_out_of_domain_berg_returns_422_with_the_domain(client, session, grid):
         ).delete()
         session.commit()
         clear_cache()
+
+
+def test_iceberg_context_cache_key_ignores_int_float_horizon(session, settings, grid):
+    """72 and 72.0 are the same request and must hit the same cache entry.
+
+    They serialise differently, so without normalisation a warmed cache is
+    silently bypassed - the endpoint pays full cost while the cache holds an
+    identical result under a near-identical key.
+    """
+    from app.services.environment import clear_cache, get_iceberg_context
+
+    clear_cache()
+    first = get_iceberg_context(session, settings, grid, horizon_hours=72)
+    second = get_iceberg_context(session, settings, grid, horizon_hours=72.0)
+    assert first is second, "int and float horizons produced separate cache entries"

@@ -43,6 +43,8 @@ import numpy as np
 from app.config import Settings, get_settings
 from app.services import landmask
 from app.utils.geo import (
+    EARTH_RADIUS_M,
+    OMEGA,
     GridSpec,
     bilinear_sample,
     coriolis_parameter,
@@ -452,6 +454,184 @@ def _integrate(
     return samples
 
 
+def _sample_many(
+    grid: GridSpec, prepared: dict[str, np.ndarray], lat: np.ndarray, lon: np.ndarray
+) -> dict[str, np.ndarray]:
+    """Bilinearly sample the forcing at many positions at once.
+
+    Vectorised counterpart of :func:`_sample`: the ensemble integrates all
+    members simultaneously, so the per-step cost stops scaling with member
+    count.  Positions outside the domain sample as zero, matching ``_sample``.
+    """
+    lats, lons = grid.lats, grid.lons
+    fi = (lat - grid.lat_min) / grid.dlat
+    fj = (lon - grid.lon_min) / grid.dlon
+    inside = (
+        (lat >= grid.lat_min - grid.dlat / 2) & (lat <= grid.lat_max + grid.dlat / 2)
+        & (lon >= grid.lon_min - grid.dlon / 2) & (lon <= grid.lon_max + grid.dlon / 2)
+    )
+    i0 = np.clip(np.floor(fi), 0, len(lats) - 1).astype(int)
+    j0 = np.clip(np.floor(fj), 0, len(lons) - 1).astype(int)
+    i1 = np.minimum(i0 + 1, len(lats) - 1)
+    j1 = np.minimum(j0 + 1, len(lons) - 1)
+    ti = np.clip(fi - i0, 0.0, 1.0)
+    tj = np.clip(fj - j0, 0.0, 1.0)
+
+    out: dict[str, np.ndarray] = {}
+    for key in ENV_KEYS:
+        f = prepared[key]
+        v = (
+            f[i0, j0] * (1 - ti) * (1 - tj)
+            + f[i1, j0] * ti * (1 - tj)
+            + f[i0, j1] * (1 - ti) * tj
+            + f[i1, j1] * ti * tj
+        )
+        out[key] = np.where(inside, v, 0.0)
+    return out
+
+
+def _acceleration_many(
+    state: IcebergState,
+    lat: np.ndarray,
+    u: np.ndarray,
+    v: np.ndarray,
+    env: dict[str, np.ndarray],
+    air_drag: np.ndarray,
+    water_drag: np.ndarray,
+    params: DriftParameters,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorised form of :func:`_acceleration` over an ensemble of members."""
+    mass = state.mass_kg * (1.0 + params.added_mass)
+    f = 2.0 * OMEGA * np.sin(np.radians(lat))
+
+    ua, va = env["u10"], env["v10"]
+    uw, vw = env["u_current"], env["v_current"]
+    conc = np.clip(env["sea_ice_concentration"], 0.0, 1.0)
+
+    dua, dva = ua - u, va - v
+    ca = 0.5 * RHO_AIR * air_drag * state.sail_area_m2 * np.hypot(dua, dva)
+    fax, fay = ca * dua, ca * dva
+
+    duw, dvw = uw - u, vw - v
+    cw = 0.5 * RHO_WATER * water_drag * state.keel_area_m2 * np.hypot(duw, dvw)
+    fwx, fwy = cw * duw, cw * dvw
+
+    ui, vi = uw + 0.02 * ua, vw + 0.02 * va
+    engaged = conc > params.ice_lock_concentration
+    engagement = np.where(
+        engaged,
+        (conc - params.ice_lock_concentration) / max(1e-6, 1.0 - params.ice_lock_concentration),
+        0.0,
+    )
+    dui, dvi = ui - u, vi - v
+    ice_area = 0.5 * (state.length_m + state.width_m) * params.sea_ice_thickness_m
+    ci = 0.5 * RHO_SEA_ICE * params.ice_drag * ice_area * np.hypot(dui, dvi) * engagement
+    fix, fiy = ci * dui, ci * dvi
+
+    fcx, fcy = state.mass_kg * f * v, -state.mass_kg * f * u
+    fpx, fpy = -state.mass_kg * f * vw, state.mass_kg * f * uw
+
+    return (fax + fwx + fix + fcx + fpx) / mass, (fay + fwy + fiy + fcy + fpy) / mass
+
+
+def _integrate_ensemble(
+    state: IcebergState,
+    grid: GridSpec,
+    prepared: dict[str, np.ndarray],
+    params: DriftParameters,
+    horizon_hours: float,
+    output_every_hours: float,
+    perturbations: Sequence[dict[str, float]],
+) -> list[np.ndarray]:
+    """Integrate the control run and every ensemble member together.
+
+    Member 0 is the unperturbed control.  Returns one array per output step,
+    shaped ``(n_members + 1, 5)`` holding lat, lon, u, v and a grounded flag.
+    """
+    n = len(perturbations) + 1
+    lat = np.full(n, state.latitude, dtype=float)
+    lon = np.full(n, state.longitude, dtype=float)
+    u = np.full(n, state.u_m_s, dtype=float)
+    v = np.full(n, state.v_m_s, dtype=float)
+    grounded = np.zeros(n, dtype=bool)
+
+    zeros = np.zeros(n)
+    wind_u = np.array([0.0] + [p["wind_u"] for p in perturbations])
+    wind_v = np.array([0.0] + [p["wind_v"] for p in perturbations])
+    cur_u = np.array([0.0] + [p["cur_u"] for p in perturbations])
+    cur_v = np.array([0.0] + [p["cur_v"] for p in perturbations])
+    air_drag = params.air_drag * np.array([1.0] + [p["air_scale"] for p in perturbations])
+    water_drag = params.water_drag * np.array([1.0] + [p["water_scale"] for p in perturbations])
+
+    ocean = landmask.navigable_mask(grid)
+    dt = params.timestep_s
+    n_steps = max(1, int(round(horizon_hours * 3600.0 / dt)))
+    out_every = max(1, int(round(output_every_hours * 3600.0 / dt)))
+    samples: list[np.ndarray] = []
+
+    def forcing(la: np.ndarray, lo: np.ndarray) -> dict[str, np.ndarray]:
+        env = _sample_many(grid, prepared, la, lo)
+        env["u10"] = env["u10"] + wind_u
+        env["v10"] = env["v10"] + wind_v
+        env["u_current"] = env["u_current"] + cur_u
+        env["v_current"] = env["v_current"] + cur_v
+        return env
+
+    for step in range(1, n_steps + 1):
+        env = forcing(lat, lon)
+        acc = lambda uu, vv: _acceleration_many(  # noqa: E731 - local shorthand
+            state, lat, uu, vv, env, air_drag, water_drag, params
+        )
+        k1u, k1v = acc(u, v)
+        k2u, k2v = acc(u + 0.5 * dt * k1u, v + 0.5 * dt * k1v)
+        k3u, k3v = acc(u + 0.5 * dt * k2u, v + 0.5 * dt * k2v)
+        k4u, k4v = acc(u + dt * k3u, v + dt * k3v)
+        du = (dt / 6.0) * (k1u + 2 * k2u + 2 * k3u + k4u)
+        dv = (dt / 6.0) * (k1v + 2 * k2v + 2 * k3v + k4v)
+        u_new = np.clip(u + du, -params.max_speed_m_s, params.max_speed_m_s)
+        v_new = np.clip(v + dv, -params.max_speed_m_s, params.max_speed_m_s)
+
+        conc = np.clip(env["sea_ice_concentration"], 0.0, 1.0)
+        tau = params.besetment_timescale_s
+        if tau > 0:
+            beset = conc >= params.ice_full_lock_concentration
+            alpha = (1.0 - math.exp(-dt / tau)) * beset
+            ui = env["u_current"] + 0.02 * env["u10"]
+            vi = env["v_current"] + 0.02 * env["v10"]
+            u_new = u_new + alpha * (ui - u_new)
+            v_new = v_new + alpha * (vi - v_new)
+
+        dx = 0.5 * (u + u_new) * dt
+        dy = 0.5 * (v + v_new) * dt
+        new_lat = np.clip(lat + np.degrees(dy / EARTH_RADIUS_M), -89.9, 89.9)
+        coslat = np.maximum(np.cos(np.radians(lat)), 1e-6)
+        new_lon = lon + np.degrees(dx / (EARTH_RADIUS_M * coslat))
+        new_lon = ((new_lon + 180.0) % 360.0) - 180.0
+
+        i, j = _grid_index_many(grid, new_lat, new_lon)
+        blocked = ~ocean[i, j] | grounded
+        grounded = grounded | blocked
+        lat = np.where(blocked, lat, new_lat)
+        lon = np.where(blocked, lon, new_lon)
+        u = np.where(blocked, 0.0, u_new)
+        v = np.where(blocked, 0.0, v_new)
+
+        if step % out_every == 0 or step == n_steps:
+            samples.append(np.column_stack([lat, lon, u, v, grounded.astype(float)]))
+    return samples
+
+
+def _grid_index_many(grid: GridSpec, lat: np.ndarray, lon: np.ndarray):
+    # A degenerate berg (zero mass) produces NaN accelerations; casting NaN to
+    # int is undefined, so those members are pinned to cell 0 and will be
+    # rejected by the caller rather than silently indexing at random.
+    lat = np.nan_to_num(np.asarray(lat, float), nan=grid.lat_min)
+    lon = np.nan_to_num(np.asarray(lon, float), nan=grid.lon_min)
+    i = np.clip(np.round((lat - grid.lat_min) / grid.dlat), 0, grid.shape[0] - 1).astype(int)
+    j = np.clip(np.round((lon - grid.lon_min) / grid.dlon), 0, grid.shape[1] - 1).astype(int)
+    return i, j
+
+
 def _is_prepared(fields: dict[str, np.ndarray]) -> bool:
     """True when ``fields`` already went through :func:`prepare_forcing`."""
     return all(k in fields for k in ENV_KEYS) and all(
@@ -501,6 +681,12 @@ def predict_trajectory(
     ensemble_size = settings.iceberg_ensemble_members if ensemble_size is None else ensemble_size
     if horizon_hours <= 0:
         raise ValidationError("horizon_hours must be positive")
+    if state.mass_kg <= 0 or state.length_m <= 0 or state.width_m <= 0:
+        raise ValidationError(
+            f"Iceberg {state.iceberg_id} has non-physical dimensions "
+            f"({state.length_m:.0f} x {state.width_m:.0f} x {state.thickness_m:.0f} m); "
+            f"no trajectory can be integrated."
+        )
     if not grid.contains(state.latitude, state.longitude):
         # Outside the analysis domain there is no wind, current or ice field to
         # integrate. Returning a stationary trajectory would be a confident
@@ -521,10 +707,10 @@ def predict_trajectory(
         env0 = _sample(grid, prepared, state.latitude, state.longitude)
         state.u_m_s, state.v_m_s = env0["u_current"], env0["v_current"]
 
-    control = _integrate(state, grid, prepared, params, horizon_hours, output_every_hours)
-    members: list[list[tuple]] = []
-    for pert in _perturbations(max(0, ensemble_size)):
-        members.append(_integrate(state, grid, prepared, params, horizon_hours, output_every_hours, pert))
+    perturbations = _perturbations(max(0, ensemble_size))
+    samples = _integrate_ensemble(
+        state, grid, prepared, params, horizon_hours, output_every_hours, perturbations
+    )
 
     notes: list[str] = []
     env0 = _sample(grid, prepared, state.latitude, state.longitude)
@@ -537,17 +723,14 @@ def predict_trajectory(
 
     points: list[TrajectoryPoint] = []
     prev_lat, prev_lon = state.latitude, state.longitude
-    for k, (hours, lat, lon, u, v, grounded) in enumerate(control):
-        if k == 0:
-            continue
+    for step in samples:
+        # Row 0 is the control run; the remaining rows are ensemble members.
+        lat, lon, u, v, grounded = step[0]
+        hours = (len(points) + 1) * output_every_hours
         spread_km = 0.0
-        if members:
-            radii = []
-            for m in members:
-                if k < len(m):
-                    radii.append(haversine_km(lat, lon, m[k][1], m[k][2]))
-            if radii:
-                spread_km = float(np.sqrt(np.mean(np.square(radii))))
+        if len(step) > 1:
+            radii = haversine_km(lat, lon, step[1:, 0], step[1:, 1])
+            spread_km = float(np.sqrt(np.mean(np.square(radii))))
         points.append(
             TrajectoryPoint(
                 valid_at=issued_at + timedelta(hours=hours),
@@ -571,7 +754,7 @@ def predict_trajectory(
         origin=(state.latitude, state.longitude),
         points=points,
         state=state,
-        ensemble_size=len(members),
+        ensemble_size=len(perturbations),
         data_mode=settings.data_mode,
         forcing=forcing,
         notes=notes,

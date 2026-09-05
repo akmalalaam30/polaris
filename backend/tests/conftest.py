@@ -40,11 +40,19 @@ def polaris_test_environment(tmp_path_factory):
     processed.mkdir()
     models.mkdir()
 
+    # Point the suite at PostgreSQL by exporting POLARIS_TEST_DATABASE_URL, e.g.
+    #   POLARIS_TEST_DATABASE_URL=postgresql+psycopg2://polaris:pw@localhost:5432/polaris
+    # Everything is created and dropped inside that database, so the same 189
+    # tests validate the PostgreSQL/PostGIS code path rather than only SQLite.
+    database_url = os.environ.get(
+        "POLARIS_TEST_DATABASE_URL", f"sqlite:///{(workspace / 'test.db').as_posix()}"
+    )
+
     previous = dict(os.environ)
     os.environ.update(
         {
             "DATA_MODE": "demo",
-            "DATABASE_URL": f"sqlite:///{(workspace / 'test.db').as_posix()}",
+            "DATABASE_URL": database_url,
             "PROCESSED_DATA_DIR": str(processed),
             "MODEL_PATH": str(models),
             "LOG_LEVEL": "WARNING",
@@ -98,10 +106,16 @@ def grid(settings):
 
 @pytest.fixture(scope="session")
 def initialised_db(settings):
-    """A fresh schema in the throwaway database."""
+    """A fresh schema in the throwaway database.
+
+    PostGIS is enabled when the target is PostgreSQL so the generated geography
+    columns and their GiST indexes are exercised too, not just the portable
+    lat/lon schema.
+    """
+    from app.database.connection import dialect_name
     from app.database.init_db import init_database
 
-    return init_database(reset=True, postgis=False)
+    return init_database(reset=True, postgis=dialect_name() == "postgresql")
 
 
 @pytest.fixture(scope="session")

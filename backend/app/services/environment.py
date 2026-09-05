@@ -39,17 +39,36 @@ CACHE_TTL_SECONDS = 900.0
 
 _LOCK = threading.RLock()
 _CACHE: dict[str, tuple[float, Any]] = {}
+#: One build lock per cache key, so concurrent callers wait for a single build
+#: instead of each doing the same expensive work.
+_BUILD_LOCKS: dict[str, threading.Lock] = {}
 
 
 def _cached(key: str, builder: Callable[[], Any], ttl: float = CACHE_TTL_SECONDS) -> Any:
+    """Return a cached product, building it at most once across threads.
+
+    Without the per-key build lock every request that arrives while a product
+    is still being built starts its own copy.  That is not just wasted work: on
+    a cold start the background warm-up and the first user request end up
+    computing the same iceberg ensemble simultaneously and competing for CPU,
+    which makes the request *slower* than having no warm-up at all.
+    """
     now = time.monotonic()
     with _LOCK:
         hit = _CACHE.get(key)
         if hit and (now - hit[0]) < ttl:
             return hit[1]
-    value = builder()
-    with _LOCK:
-        _CACHE[key] = (time.monotonic(), value)
+        build_lock = _BUILD_LOCKS.setdefault(key, threading.Lock())
+
+    with build_lock:
+        # Re-check: another thread may have finished while we waited.
+        with _LOCK:
+            hit = _CACHE.get(key)
+            if hit and (time.monotonic() - hit[0]) < ttl:
+                return hit[1]
+        value = builder()
+        with _LOCK:
+            _CACHE[key] = (time.monotonic(), value)
     return value
 
 
@@ -57,6 +76,7 @@ def clear_cache() -> None:
     """Drop every cached product (used by tests and after ingestion runs)."""
     with _LOCK:
         _CACHE.clear()
+        _BUILD_LOCKS.clear()
     sif.clear_model_cache()
 
 
@@ -189,6 +209,10 @@ def get_iceberg_context(
     env = get_environment(session, settings, grid)
     bergs = repo.latest_iceberg_positions(session)
     stamps = [b.observed_at for b in bergs if b.observed_at]
+    # Normalise the horizon: 72 and 72.0 are the same request, but they
+    # serialise differently and would otherwise be two cache entries - which is
+    # exactly how a warmed cache silently fails to be used.
+    horizon_hours = float(horizon_hours)
     key = "berg:" + _key(
         max(stamps) if stamps else None, len(bergs), horizon_hours, with_trajectories,
         env.observed_at, grid.to_dict(),
@@ -286,6 +310,7 @@ def get_risk_grid(
     grid = grid or grid_from_settings(settings)
     vessel = vessel or rk.VesselProfile()
     weights = weights or rk.RiskWeights.from_settings(settings)
+    horizon_hours = int(horizon_hours)
 
     env = get_environment(session, settings, grid)
     berg_ctx = get_iceberg_context(session, settings, grid, horizon_hours=max(horizon_hours, 72))

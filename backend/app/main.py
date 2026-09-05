@@ -6,6 +6,7 @@ minimal test frontend from ``/ui`` when it is present.
 
 from __future__ import annotations
 
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -70,6 +71,44 @@ TAGS_METADATA = [
 ]
 
 
+def _warm_caches() -> None:
+    """Precompute the expensive shared products in the background.
+
+    The first request that needs the land-mask distance field, the iceberg
+    trajectories or the risk grid pays several seconds to build them; every
+    later request is served from cache in milliseconds.  Doing that work at
+    startup instead means nobody's first click is the one that waits.
+
+    Failures here are logged and ignored: a warm cache is an optimisation, and
+    the endpoints rebuild whatever is missing on demand.
+    """
+    import time
+
+    started = time.perf_counter()
+    try:
+        from app.database.connection import session_scope
+        from app.services import environment as envsvc
+        from app.services import landmask
+        from app.utils.geo import grid_from_settings
+
+        grid = grid_from_settings(settings)
+        landmask.navigable_mask(grid)
+        landmask.distance_to_land_km(grid)
+
+        with session_scope() as session:
+            envsvc.get_environment(session, settings, grid)
+            for horizon in settings.forecast_horizons_hours:
+                try:
+                    envsvc.get_forecast(horizon, settings, grid)
+                except Exception as exc:  # noqa: BLE001 - untrained model is fine
+                    log.debug("Warm-up skipped forecast %dh: %s", horizon, exc)
+            envsvc.get_iceberg_context(session, settings, grid, horizon_hours=72.0)
+            envsvc.get_risk_grid(session, settings, grid, horizon_hours=0)
+        log.info("Cache warm-up finished in %.1fs", time.perf_counter() - started)
+    except Exception as exc:  # noqa: BLE001 - never let warm-up break startup
+        log.warning("Cache warm-up skipped (%s); first request will build on demand", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Starting %s v%s (data_mode=%s)", settings.app_name, APP_VERSION, settings.data_mode)
@@ -81,6 +120,11 @@ async def lifespan(app: FastAPI):
     log.info("Database: %s (%s)", "ok" if ok else "UNAVAILABLE", detail)
     if not ok:
         log.error("The API will start, but data endpoints will return 503 until the database is reachable.")
+    elif settings.warm_cache_on_startup:
+        # In a daemon thread so the server accepts connections immediately -
+        # health checks answer while the heavy products are still building.
+        threading.Thread(target=_warm_caches, name="polaris-warmup", daemon=True).start()
+        log.info("Cache warm-up running in the background")
     yield
     log.info("Shutting down %s", settings.app_name)
 

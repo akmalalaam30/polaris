@@ -82,7 +82,9 @@ Every claim below was executed and measured on this codebase.
 | Navigation graph, A* and Dijkstra | Working |
 | Shortest / safest / POLARIS routes | Working |
 | All REST endpoints, validation and error handling | Working |
-| Automated tests | **189 passing** (`pytest`, ~64 s) |
+| Automated tests | **190 passing** (`pytest`, ~75 s) |
+| Same suite on PostgreSQL 16.4 + PostGIS 3.4 | **190 passing** — the Postgres path is verified, not assumed |
+| Cold-start latency | Eliminated by a background warm-up: first click 0.86 s total across all endpoints, was 69 s |
 | End-to-end integration test | Working (`tests/test_e2e.py`) |
 | Browser client | Verified in Chromium, no console errors |
 
@@ -490,6 +492,22 @@ python -m app.database.init_db
 WAL journaling and foreign keys are enabled automatically.
 
 ### PostgreSQL + PostGIS
+
+**Verified**: all 190 tests pass against PostgreSQL 16.4 with PostGIS 3.4, not
+only against SQLite. Run them yourself:
+
+```bash
+docker run -d --name polaris-postgres   -e POSTGRES_USER=polaris -e POSTGRES_PASSWORD=changeme -e POSTGRES_DB=polaris   -p 55432:5432 postgis/postgis:16-3.4
+
+POLARIS_TEST_DATABASE_URL=postgresql+psycopg2://polaris:changeme@localhost:55432/polaris pytest
+```
+
+`POLARIS_TEST_DATABASE_URL` points the suite at any database; everything is
+created and dropped inside it, and PostGIS is enabled automatically when the
+target is PostgreSQL so the generated geography columns and GiST indexes are
+exercised too.
+
+For a normal (non-Docker) install:
 
 ```bash
 createdb polaris
