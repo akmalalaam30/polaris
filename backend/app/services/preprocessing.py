@@ -49,6 +49,11 @@ WEATHER_HISTORY_FILE = "weather_history.nc"
 #: Lags (in days) offered to the forecast model.
 LAG_DAYS = (1, 2, 3, 5, 7, 14)
 
+ICE_DRIFT_HISTORY_FILE = "ice_drift_history.nc"
+
+#: Windows (days) over which freezing-degree-days are accumulated.
+FDD_WINDOWS = (3, 7)
+
 
 # ---------------------------------------------------------------------------
 # History archive (NetCDF)
@@ -302,6 +307,104 @@ def _fetch_era5_daily_history(
     return out
 
 
+def build_ice_drift_history(
+    times: Sequence[datetime],
+    grid: GridSpec | None = None,
+    settings: Settings | None = None,
+) -> dict[str, np.ndarray] | None:
+    """Assemble the daily sea-ice drift archive aligned to ``times``.
+
+    Returns ``None`` when no drift source is reachable, in which case the model
+    simply trains without the dynamic terms rather than on invented values.
+    Demo mode derives a drift field from the same coastal/ACC circulation the
+    synthetic ocean uses, so the feature exists in both modes.
+    """
+    settings = settings or get_settings()
+    grid = grid or grid_from_settings(settings)
+    if not times:
+        return None
+
+    try:
+        if settings.is_demo:
+            from app.services.demo_data import DemoFieldGenerator
+
+            generator = DemoFieldGenerator(grid)
+            usi, vsi = [], []
+            for dt in times:
+                ocean = generator.ocean(dt)
+                wx = generator.weather(dt)
+                # Free-drift pack: surface current plus 2% of the wind.
+                usi.append(np.nan_to_num(ocean["u_current"]) + 0.02 * wx["u10"])
+                vsi.append(np.nan_to_num(ocean["v_current"]) + 0.02 * wx["v10"])
+            stacked = {
+                "usi": np.stack(usi).astype("float32"),
+                "vsi": np.stack(vsi).astype("float32"),
+            }
+        else:
+            from app.services.data_ingestion import CopernicusMarineClient
+
+            client = CopernicusMarineClient(settings)
+            if not client.has_credentials:
+                raise DataUnavailableError(
+                    "CMEMS credentials are required for sea-ice drift history"
+                )
+            src_times, fields = client.fetch_ice_drift_history(
+                min(times).date(), max(times).date(), grid, variables=("usi", "vsi")
+            )
+            stacked = _align_to_times(times, src_times, fields)
+    except Exception as exc:  # noqa: BLE001 - degradation is expected and logged
+        log.warning("Sea-ice drift history unavailable (%s); training without dynamic terms", exc)
+        return None
+
+    save_history(
+        times, stacked["usi"], grid, settings,
+        filename=ICE_DRIFT_HISTORY_FILE,
+        variables={"vsi": stacked["vsi"]},
+        attrs={"variable": "sea-ice drift velocity (usi, vsi)"},
+    )
+    return stacked
+
+
+def _align_to_times(
+    wanted: Sequence[datetime], available: Sequence[datetime], fields: dict[str, np.ndarray]
+) -> dict[str, np.ndarray]:
+    """Reindex a source archive onto the requested day list.
+
+    Missing days are carried forward from the nearest earlier day rather than
+    interpolated across, so a gap never invents motion that was not observed.
+    """
+    by_day = {dt.date(): i for i, dt in enumerate(available)}
+    order: list[int | None] = []
+    last: int | None = None
+    for dt in wanted:
+        idx = by_day.get(dt.date())
+        if idx is not None:
+            last = idx
+        order.append(last)
+    first_valid = next((i for i in order if i is not None), None)
+    if first_valid is None:
+        raise DataUnavailableError("No overlap between the requested days and the drift archive")
+    order = [first_valid if i is None else i for i in order]
+    missing = sum(1 for dt in wanted if dt.date() not in by_day)
+    if missing:
+        log.warning("Ice-drift archive: %d of %d day(s) carried forward", missing, len(wanted))
+    return {k: np.stack([v[i] for i in order]).astype("float32") for k, v in fields.items()}
+
+
+def load_ice_drift_history(
+    settings: Settings | None = None,
+) -> tuple[list[datetime], dict[str, np.ndarray]] | None:
+    """Load the drift archive if it exists, else ``None``."""
+    settings = settings or get_settings()
+    if not history_path(settings, ICE_DRIFT_HISTORY_FILE).exists():
+        return None
+    times, variables, _grid, _attrs = load_history(settings, ICE_DRIFT_HISTORY_FILE)
+    renamed = dict(variables)
+    if "sea_ice_concentration" in renamed:
+        renamed["usi"] = renamed.pop("sea_ice_concentration")
+    return times, renamed
+
+
 def load_weather_history(settings: Settings | None = None) -> tuple[list[datetime], dict[str, np.ndarray]] | None:
     """Load the weather archive if it exists, else ``None``."""
     settings = settings or get_settings()
@@ -313,6 +416,76 @@ def load_weather_history(settings: Settings | None = None) -> tuple[list[datetim
     if "sea_ice_concentration" in renamed:
         renamed["t2m"] = renamed.pop("sea_ice_concentration")
     return times, renamed
+
+
+# ---------------------------------------------------------------------------
+# Sea-ice dynamics: the terms of the continuity equation
+# ---------------------------------------------------------------------------
+def _metric_factors(grid: GridSpec) -> tuple[float, np.ndarray]:
+    """Grid spacing in metres: ``(dy, dx)`` where dx varies with latitude."""
+    lat2d, _ = grid.meshgrid()
+    dy = grid.dlat * 111_320.0
+    dx = grid.dlon * 111_320.0 * np.cos(np.radians(lat2d))
+    return dy, np.maximum(dx, 1.0)
+
+
+def ice_drift_terms(
+    concentration: np.ndarray, u_ice: np.ndarray, v_ice: np.ndarray, grid: GridSpec
+) -> dict[str, np.ndarray]:
+    """Dynamic tendency terms from the sea-ice continuity equation.
+
+    Concentration evolves as::
+
+        dc/dt = -u . grad(c)  -  c * div(u)  +  thermodynamics
+                (advection)      (convergence)
+
+    Both dynamic terms are returned in **per-day** units, which is the natural
+    scale for a 24-72 h forecast.
+
+    Why these and not a displacement feature: Antarctic pack drifts at roughly
+    0.05-0.15 m/s, so 24 h of motion is 4-13 km against grid cells of ~55 km.
+    Tracking *where the ice came from* is therefore sub-grid and unresolvable
+    here, whereas the divergence and gradient of a smooth drift field are both
+    perfectly well resolved.
+    """
+    conc = np.nan_to_num(np.asarray(concentration, float), nan=0.0)
+    u = np.nan_to_num(np.asarray(u_ice, float), nan=0.0)
+    v = np.nan_to_num(np.asarray(v_ice, float), nan=0.0)
+    dy, dx = _metric_factors(grid)
+
+    dc_dlat, dc_dlon = np.gradient(conc)
+    du_dlat, du_dlon = np.gradient(u)
+    dv_dlat, dv_dlon = np.gradient(v)
+
+    # x is eastward (increasing lon index), y is northward (increasing lat index).
+    dc_dx, dc_dy = dc_dlon / dx, dc_dlat / dy
+    div = du_dlon / dx + dv_dlat / dy
+
+    seconds_per_day = 86400.0
+    advection = -(u * dc_dx + v * dc_dy) * seconds_per_day
+    convergence = -(conc * div) * seconds_per_day
+    return {
+        "ice_u": u,
+        "ice_v": v,
+        "ice_speed": np.hypot(u, v),
+        "ice_divergence_per_day": div * seconds_per_day,
+        "ice_advection_per_day": np.clip(advection, -1.0, 1.0),
+        "ice_convergence_per_day": np.clip(convergence, -1.0, 1.0),
+    }
+
+
+def freezing_degree_days(t2m_history: np.ndarray, index: int, window: int) -> np.ndarray:
+    """Accumulated freezing-degree-days over the ``window`` days up to ``index``.
+
+    FDD is the classical driver of thermodynamic ice growth (Stefan's law gives
+    thickness proportional to the square root of accumulated FDD).  Only air
+    below the freezing point contributes.
+    """
+    start = max(0, index - window + 1)
+    block = np.asarray(t2m_history[start : index + 1], dtype=float)
+    if block.size == 0:
+        return np.zeros(t2m_history.shape[1:], dtype=float)
+    return np.nansum(np.clip(-block, 0.0, None), axis=0)
 
 
 # ---------------------------------------------------------------------------
@@ -555,7 +728,13 @@ class FeatureSpec:
         return len(self.names)
 
 
-def feature_names(use_weather: bool) -> list[str]:
+DRIFT_FEATURES = [
+    "ice_u", "ice_v", "ice_speed",
+    "ice_divergence_per_day", "ice_advection_per_day", "ice_convergence_per_day",
+]
+
+
+def feature_names(use_weather: bool, use_drift: bool = False) -> list[str]:
     """The canonical feature order.
 
     Training and inference both derive their column order from here, so a model
@@ -568,6 +747,9 @@ def feature_names(use_weather: bool) -> list[str]:
     names += ["lat", "lon", "coast_dist_km", "doy_sin", "doy_cos", "horizon_days"]
     if use_weather:
         names += ["t2m", "wind_speed"]
+        names += [f"fdd_{w}" for w in FDD_WINDOWS]
+    if use_drift:
+        names += DRIFT_FEATURES
     return names
 
 
@@ -583,6 +765,7 @@ def build_feature_frame(
     grid: GridSpec,
     horizon_days: int,
     weather: dict[str, np.ndarray] | None = None,
+    drift: dict[str, np.ndarray] | None = None,
     subsample: int = 1,
     max_lag: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray]:
@@ -606,7 +789,10 @@ def build_feature_frame(
     use_weather = weather is not None and all(
         k in weather and weather[k].shape == ice.shape for k in ("t2m", "wind_speed")
     )
-    names = feature_names(use_weather)
+    use_drift = drift is not None and all(
+        k in drift and drift[k].shape == ice.shape for k in ("usi", "vsi")
+    )
+    names = feature_names(use_weather, use_drift)
 
     x_blocks: list[np.ndarray] = []
     y_blocks: list[np.ndarray] = []
@@ -643,6 +829,12 @@ def build_feature_frame(
                 np.nan_to_num(weather["t2m"][t][valid], nan=-15.0),
                 np.nan_to_num(weather["wind_speed"][t][valid], nan=8.0),
             ]
+            columns += [
+                freezing_degree_days(weather["t2m"], t, w)[valid] for w in FDD_WINDOWS
+            ]
+        if use_drift:
+            terms = ice_drift_terms(current, drift["usi"][t], drift["vsi"][t], grid)
+            columns += [terms[k][valid] for k in DRIFT_FEATURES]
 
         x_blocks.append(np.column_stack(columns).astype("float32"))
         y_blocks.append(target[valid].astype("float32"))
@@ -664,6 +856,7 @@ def build_inference_features(
     grid: GridSpec,
     horizon_days: int,
     weather: dict[str, np.ndarray] | None = None,
+    drift: dict[str, np.ndarray] | None = None,
     expected_names: Sequence[str] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """Features for the latest time step: ``(X, usable-cell mask, column names)``.
@@ -718,4 +911,20 @@ def build_inference_features(
             np.nan_to_num(weather["t2m"][t][valid], nan=-15.0),
             np.nan_to_num(weather["wind_speed"][t][valid], nan=8.0),
         ]
-    return np.column_stack(columns).astype("float32"), valid, feature_names(use_weather)
+        columns += [freezing_degree_days(weather["t2m"], t, w)[valid] for w in FDD_WINDOWS]
+
+    drift_available = (
+        drift is not None
+        and all(k in drift for k in ("usi", "vsi"))
+        and drift["usi"].shape == ice.shape
+    )
+    use_drift = drift_available and (expected_names is None or "ice_u" in expected_names)
+    if use_drift:
+        terms = ice_drift_terms(current, drift["usi"][t], drift["vsi"][t], grid)
+        columns += [terms[k][valid] for k in DRIFT_FEATURES]
+
+    return (
+        np.column_stack(columns).astype("float32"),
+        valid,
+        feature_names(use_weather, use_drift),
+    )

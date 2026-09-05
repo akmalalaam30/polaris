@@ -520,6 +520,82 @@ class CopernicusMarineClient:
             raise DataUnavailableError(f"{path.name}: none of {list(rename)} present")
         return out
 
+    def fetch_ice_drift_history(
+        self,
+        start: date,
+        end: date,
+        grid: GridSpec,
+        variables: Sequence[str] = ("usi", "vsi", "siconc"),
+    ) -> tuple[list[datetime], dict[str, np.ndarray]]:
+        """Daily sea-ice drift history on the analysis grid.
+
+        ``usi``/``vsi`` are the ocean model's sea-ice velocity - the same
+        quantity as the NSIDC Polar Pathfinder motion vectors, without an
+        Earthdata login.  Ice *advection* and *convergence* are the dominant
+        dynamic drivers of concentration change, so this is the physics the
+        forecast model was missing.
+
+        The dataset is opened lazily and strided down to approximately the
+        analysis grid before anything is transferred: the source is 0.083 deg,
+        so a stride of 6 x 12 lands almost exactly on a 0.5 x 1.0 degree grid
+        and cuts the download by about seventy times.  Striding subsamples
+        rather than averages, which is acceptable for a smooth velocity field
+        and is why the result is re-gridded properly below.
+        """
+        try:
+            import copernicusmarine  # type: ignore
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise DataUnavailableError("copernicusmarine is not installed") from exc
+        if not self.has_credentials:
+            raise DataUnavailableError("COPERNICUS_USERNAME / COPERNICUS_PASSWORD are not configured")
+
+        ds = copernicusmarine.open_dataset(
+            dataset_id=self.settings.copernicus_dataset_seaice,
+            username=self.settings.copernicus_username,
+            password=self.settings.copernicus_password,
+            variables=list(variables),
+            minimum_longitude=grid.lon_min,
+            maximum_longitude=grid.lon_max,
+            minimum_latitude=grid.lat_min,
+            maximum_latitude=grid.lat_max,
+            start_datetime=f"{start:%Y-%m-%d}T00:00:00",
+            end_datetime=f"{end:%Y-%m-%d}T23:59:59",
+        )
+        try:
+            src_dlat = float(abs(ds.latitude.values[1] - ds.latitude.values[0]))
+            src_dlon = float(abs(ds.longitude.values[1] - ds.longitude.values[0]))
+            stride_lat = max(1, int(round(grid.dlat / src_dlat)))
+            stride_lon = max(1, int(round(grid.dlon / src_dlon)))
+            log.info(
+                "CMEMS ice drift: source %.4f/%.4f deg, striding %dx%d before transfer",
+                src_dlat, src_dlon, stride_lat, stride_lon,
+            )
+            sub = ds.isel(
+                latitude=slice(None, None, stride_lat),
+                longitude=slice(None, None, stride_lon),
+            ).load()
+            times = [
+                pd.Timestamp(t).to_pydatetime().replace(tzinfo=timezone.utc)
+                for t in sub["time"].values
+            ]
+            lat2d, lon2d = np.meshgrid(sub["latitude"].values, sub["longitude"].values, indexing="ij")
+            out: dict[str, np.ndarray] = {}
+            for var in variables:
+                if var not in sub:
+                    continue
+                stack = [
+                    regrid_nearest(lat2d, lon2d, np.asarray(sub[var].values[k], float), grid)
+                    for k in range(len(times))
+                ]
+                out[var] = np.stack(stack).astype("float32")
+        finally:
+            ds.close()
+
+        if not out:
+            raise DataUnavailableError("CMEMS returned none of the requested ice-drift variables")
+        log.info("CMEMS ice drift history: %d day(s), variables %s", len(times), sorted(out))
+        return times, out
+
     def fetch_via_mirror(self, grid: GridSpec) -> tuple[dict[str, np.ndarray], str]:
         if not self.settings.allow_open_mirrors:
             raise DataUnavailableError("Open mirrors disabled (ALLOW_OPEN_MIRRORS=false)")

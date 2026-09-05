@@ -98,6 +98,7 @@ def train_horizon(
     algorithm: str = "gbr",
     subsample: int = 2,
     val_fraction: float = 0.2,
+    drift: dict[str, np.ndarray] | None = None,
 ) -> TrainingReport:
     """Train candidate models, select on measured skill, and persist the winner.
 
@@ -108,20 +109,27 @@ def train_horizon(
     held-out chronological split:
 
     ``gbr_level``
-        gradient boosting on the concentration itself.
+        gradient boosting on the concentration itself, using every available
+        feature (sea ice, atmosphere, sea-ice drift).
+    ``gbr_lean``
+        the same, restricted to the sea-ice features alone.  Extra predictors
+        are not free: on a small domain the atmospheric and drift columns can
+        cost more in variance than they return in signal, and this candidate
+        measures that instead of assuming either way.
     ``gbr_delta``
         gradient boosting on the *change* over the horizon, which makes
         persistence the zero-prediction so the model only moves the answer where
         it found signal.
 
     Whichever has the lowest validation RMSE is saved - **including the
-    persistence baseline itself if neither learned model beats it**.  The
-    selection and every candidate's score are recorded in the metrics, so the
-    outcome is auditable rather than assumed.
+    persistence baseline itself if no learned model beats it**.  The selection
+    and every candidate's score are recorded in the metrics, so the outcome is
+    auditable rather than assumed.
     """
     horizon_days = max(1, int(round(horizon_hours / 24)))
     X, y, names, t_index = preprocessing.build_feature_frame(
-        times, ice, grid, horizon_days=horizon_days, weather=weather, subsample=subsample
+        times, ice, grid, horizon_days=horizon_days, weather=weather, drift=drift,
+        subsample=subsample,
     )
     X_tr, y_tr, X_val, y_val = _chronological_split(X, y, t_index, val_fraction)
     log.info(
@@ -133,32 +141,46 @@ def train_horizon(
     base_pred = baseline.predict(X_val)
     base_metrics = regression_metrics(y_val, base_pred)
 
+    # The lean feature set is a prefix of the full one: feature_names() appends
+    # the atmospheric and drift blocks after the sea-ice columns, so the subset
+    # is a plain column slice and costs nothing extra to build.
+    lean_names = preprocessing.feature_names(False, False)
+    lean_slice = slice(0, len(lean_names))
+    has_extras = len(names) > len(lean_names)
+
     candidates: dict[str, BaseForecaster] = {"persistence": baseline}
+    feature_view: dict[str, slice] = {"persistence": slice(None)}
     if algorithm.lower() not in ("persistence", "baseline"):
-        candidates["gbr_level"] = GradientBoostingForecaster(
-            horizon_hours, names, predict_delta=False
-        )
-        candidates["gbr_delta"] = GradientBoostingForecaster(
-            horizon_hours, names, predict_delta=True
-        )
+        candidates["gbr_level"] = GradientBoostingForecaster(horizon_hours, names, predict_delta=False)
+        feature_view["gbr_level"] = slice(None)
+        candidates["gbr_delta"] = GradientBoostingForecaster(horizon_hours, names, predict_delta=True)
+        feature_view["gbr_delta"] = slice(None)
+        if has_extras:
+            candidates["gbr_lean"] = GradientBoostingForecaster(
+                horizon_hours, lean_names, predict_delta=False
+            )
+            feature_view["gbr_lean"] = lean_slice
 
     scores: dict[str, dict] = {"persistence": base_metrics}
     predictions: dict[str, np.ndarray] = {"persistence": base_pred}
     for name, candidate in candidates.items():
         if name == "persistence":
             continue
+        view = feature_view[name]
         candidate.data_mode = settings.data_mode
-        candidate.fit(X_tr, y_tr)
-        pred = candidate.predict(X_val)
+        candidate.fit(X_tr[:, view], y_tr)
+        pred = candidate.predict(X_val[:, view])
         predictions[name] = pred
         scores[name] = regression_metrics(y_val, pred)
         log.info(
-            "  candidate %-11s RMSE %.4f (skill %+0.3f)",
-            name, scores[name]["rmse"], skill_score(scores[name]["rmse"], base_metrics["rmse"]),
+            "  candidate %-11s (%2d features) RMSE %.4f (skill %+0.3f)",
+            name, len(candidate.feature_names), scores[name]["rmse"],
+            skill_score(scores[name]["rmse"], base_metrics["rmse"]),
         )
 
-    # Ties go to the simpler model: persistence first, then the level model.
-    order = ["persistence", "gbr_level", "gbr_delta"]
+    # Ties go to the simpler model: persistence, then fewer features, then the
+    # level target ahead of the delta target.
+    order = ["persistence", "gbr_lean", "gbr_level", "gbr_delta"]
     selected_name = min(
         (n for n in order if n in scores),
         key=lambda n: (round(scores[n]["rmse"], 6), order.index(n)),
@@ -205,10 +227,14 @@ def train_horizon(
     model.uncertainty = BinnedUncertainty().fit(y_val, pred)
     model.data_mode = settings.data_mode
 
+    selected_view = feature_view[selected_name]
+    metrics["n_features_used"] = len(model.feature_names)
+    metrics["feature_names_used"] = list(model.feature_names)
+
     importance: dict[str, float] = {}
     if isinstance(model, GradientBoostingForecaster):
         try:
-            importance = model.permutation_importance(X_val, y_val)
+            importance = model.permutation_importance(X_val[:, selected_view], y_val)
             metrics["permutation_importance_rmse_increase"] = {
                 k: round(v, 5) for k, v in list(importance.items())[:10]
             }
@@ -252,13 +278,16 @@ def train_all(
     if rebuild_history or not preprocessing.history_path(settings).exists():
         times, ice = preprocessing.build_sea_ice_history(days=days, grid=grid, settings=settings)
         weather = preprocessing.build_weather_history(times, grid, settings)
+        drift = preprocessing.build_ice_drift_history(times, grid, settings)
     else:
         times, variables, grid, _attrs = preprocessing.load_history(settings)
         ice = variables["sea_ice_concentration"]
         loaded = preprocessing.load_weather_history(settings)
-        weather = None
-        if loaded and len(loaded[0]) == len(times):
-            weather = loaded[1]
+        weather = loaded[1] if loaded and len(loaded[0]) == len(times) else None
+        loaded_drift = preprocessing.load_ice_drift_history(settings)
+        drift = loaded_drift[1] if loaded_drift and len(loaded_drift[0]) == len(times) else None
+        if drift is None:
+            drift = preprocessing.build_ice_drift_history(times, grid, settings)
 
     if len(times) < settings.sea_ice_min_training_days:
         raise DataUnavailableError(
@@ -270,7 +299,8 @@ def train_all(
     reports: dict[int, dict] = {}
     for horizon in horizons:
         report = train_horizon(
-            horizon, times, ice, grid, weather, settings, algorithm=algorithm, subsample=subsample
+            horizon, times, ice, grid, weather, settings, algorithm=algorithm,
+            subsample=subsample, drift=drift,
         )
         reports[horizon] = report.to_dict()
         if session is not None:
@@ -388,6 +418,8 @@ def forecast(
     times, ice, grid = _latest_history(settings, grid)
     weather_pack = preprocessing.load_weather_history(settings)
     weather = weather_pack[1] if weather_pack and len(weather_pack[0]) == len(times) else None
+    drift_pack = preprocessing.load_ice_drift_history(settings)
+    drift = drift_pack[1] if drift_pack and len(drift_pack[0]) == len(times) else None
 
     model: BaseForecaster | None
     try:
@@ -403,7 +435,7 @@ def forecast(
         model = None
 
     X, mask, names = preprocessing.build_inference_features(
-        times, ice, grid, horizon_days, weather=weather,
+        times, ice, grid, horizon_days, weather=weather, drift=drift,
         expected_names=model.feature_names if model else None,
     )
     if model is None:
@@ -413,11 +445,17 @@ def forecast(
         model.data_mode = settings.data_mode
         model.metrics = {"note": "untrained persistence baseline; no validation metrics available"}
     elif model.feature_names and X.shape[1] != len(model.feature_names):
-        raise ValidationError(
-            f"Feature mismatch: model expects {len(model.feature_names)} features "
-            f"({model.feature_names[:4]}...), inference produced {X.shape[1]} ({names[:4]}...). "
-            f"Retrain with the current data configuration."
-        )
+        # A model selected on the lean feature set wants only the leading
+        # sea-ice columns; the extra blocks are always appended after them, so
+        # a prefix slice reproduces exactly what it was trained on.
+        if names[: len(model.feature_names)] == list(model.feature_names):
+            X = X[:, : len(model.feature_names)]
+        else:
+            raise ValidationError(
+                f"Feature mismatch: model expects {len(model.feature_names)} features "
+                f"({model.feature_names[:4]}...), inference produced {X.shape[1]} ({names[:4]}...). "
+                f"Retrain with the current data configuration."
+            )
 
     flat_pred = model.predict(X)
     flat_unc = model.predict_uncertainty(flat_pred)

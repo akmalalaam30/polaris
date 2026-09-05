@@ -31,6 +31,7 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=None, help="Days of history (default: SEA_ICE_HISTORY_DAYS)")
     parser.add_argument("--end-date", help="Last day of the archive (YYYY-MM-DD)")
     parser.add_argument("--no-weather", action="store_true", help="Skip the atmospheric-driver archive")
+    parser.add_argument("--no-drift", action="store_true", help="Skip the sea-ice drift archive")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -80,6 +81,21 @@ def main() -> int:
         )
     else:
         summary["weather_history"] = {"status": "skipped"}
+
+    if not args.no_drift:
+        print("Building sea-ice drift history ...")
+        drift = preprocessing.build_ice_drift_history(times, grid, settings)
+        summary["ice_drift_history"] = (
+            {
+                "path": str(preprocessing.history_path(settings, preprocessing.ICE_DRIFT_HISTORY_FILE)),
+                "variables": sorted(drift),
+                "shape": list(next(iter(drift.values())).shape),
+            }
+            if drift
+            else {"status": "unavailable", "note": "training will run without the dynamic terms"}
+        )
+    else:
+        summary["ice_drift_history"] = {"status": "skipped"}
 
     elapsed = time.time() - started
     if args.json:
