@@ -1,0 +1,58 @@
+# POLARIS backend dependencies
+# Versions are the ones the system was developed and tested against.
+# Install with:  pip install -r requirements.txt
+
+# --- Web framework -----------------------------------------------------------
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pydantic==2.12.5
+pydantic-settings==2.14.2
+
+# --- Database ----------------------------------------------------------------
+SQLAlchemy==2.0.52
+# PostgreSQL driver. SQLite (stdlib) is the zero-setup default, so this is only
+# needed when DATABASE_URL points at PostgreSQL.
+psycopg2-binary==2.9.12
+
+# --- Scientific stack --------------------------------------------------------
+numpy==2.2.6
+pandas==2.3.3
+scipy==1.18.0
+scikit-learn==1.9.0
+joblib==1.5.3
+
+# --- Geospatial --------------------------------------------------------------
+# pyproj handles the NSIDC polar-stereographic (EPSG:3412) transforms.
+pyproj==3.7.2
+shapely==2.1.2
+# Pillow reads the NSIDC GeoTIFFs. The grid is a fixed, documented projection,
+# so georeferencing comes from app/utils/geo.py and GDAL/rasterio is not needed.
+Pillow==12.3.0
+
+# --- Gridded data formats ----------------------------------------------------
+xarray==2026.7.0
+netCDF4==1.7.4
+
+# --- Graph / routing ---------------------------------------------------------
+networkx==3.6.1
+
+# --- HTTP clients ------------------------------------------------------------
+requests==2.32.5
+httpx==0.28.1
+
+# --- Configuration -----------------------------------------------------------
+python-dotenv==1.2.2
+
+# --- Testing -----------------------------------------------------------------
+pytest==9.1.1
+
+# --- Credentialed provider clients -------------------------------------------
+# Required for the official ERA5 (CDS) and Copernicus Marine download paths,
+# both of which are verified working. Without them, and with
+# ALLOW_OPEN_MIRRORS=true, POLARIS falls back to the key-free mirrors of the
+# same products; the actual source of every record is recorded either way.
+cdsapi==0.7.7
+copernicusmarine==2.4.1
+
+# --- Optional: plotting for notebooks ----------------------------------------
+# matplotlib==3.11.1

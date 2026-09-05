@@ -1,0 +1,18 @@
+{
+  "name": "polaris-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Minimal test client for the POLARIS backend (SIH26059). Every value it displays is fetched live from the POLARIS API - it has no data of its own.",
+  "scripts": {
+    "start": "python -m http.server 5500 --directory src",
+    "serve": "python -m http.server 5500 --directory src"
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "polaris": {
+    "buildRequired": false,
+    "note": "There is no build step and no npm dependency. Leaflet 1.9.4 is vendored under src/vendor/ so the client runs with no network access. The backend serves this directory at /ui, so the usual way to open it is simply http://localhost:8000/ui/ after starting the backend.",
+    "backendDefault": "http://localhost:8000/api",
+    "standaloneNote": "If served separately on port 5500 or 3000, src/app.js targets http://localhost:8000/api and the backend must allow that origin (CORS_ORIGINS)."
+  }
+}

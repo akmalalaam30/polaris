@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>POLARIS - backend test client</title>
+  <link rel="stylesheet" href="vendor/leaflet.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <strong>POLARIS</strong>
+      <span class="subtitle">Antarctic sea-ice, iceberg trajectory &amp; navigation decision support</span>
+    </div>
+    <div class="badges">
+      <span id="mode-badge" class="badge">data mode: ?</span>
+      <span id="health-badge" class="badge">backend: checking...</span>
+    </div>
+  </header>
+
+  <main>
+    <aside id="panel">
+      <section>
+        <h2>Layers</h2>
+        <label><input type="checkbox" id="layer-land" checked> Land / ice shelf</label>
+        <label><input type="checkbox" id="layer-ice" checked> Sea-ice concentration</label>
+        <label><input type="checkbox" id="layer-risk"> Navigation risk</label>
+        <label><input type="checkbox" id="layer-bergs" checked> Icebergs &amp; drift</label>
+        <label><input type="checkbox" id="layer-tiles"> Basemap tiles (needs internet)</label>
+        <div class="row">
+          <label for="ice-source">Sea ice shown</label>
+          <select id="ice-source">
+            <option value="current">Observed (latest)</option>
+            <option value="24">Forecast +24 h</option>
+            <option value="48">Forecast +48 h</option>
+            <option value="72">Forecast +72 h</option>
+          </select>
+        </div>
+        <div id="ice-meta" class="meta"></div>
+      </section>
+
+      <section>
+        <h2>Route request</h2>
+        <div class="row">
+          <label for="start">Start</label>
+          <select id="start"></select>
+        </div>
+        <div class="row">
+          <label for="destination">Destination</label>
+          <select id="destination"></select>
+        </div>
+        <div class="row">
+          <label for="ice-class">Ice class</label>
+          <select id="ice-class">
+            <option value="none">none (open water hull)</option>
+            <option value="1a">1A</option>
+            <option value="1a_super" selected>1A Super</option>
+            <option value="pc5">PC5</option>
+            <option value="icebreaker">icebreaker</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="speed">Speed (kn)</label>
+          <input type="number" id="speed" value="12" min="1" max="30" step="0.5" />
+        </div>
+        <div class="row">
+          <label for="fuel">Fuel (t/day)</label>
+          <input type="number" id="fuel" value="25" min="1" max="500" step="1" />
+        </div>
+        <div class="row">
+          <label for="tolerance">Risk tolerance</label>
+          <input type="range" id="tolerance" min="0" max="1" step="0.05" value="0.3" />
+          <span id="tolerance-value">0.30</span>
+        </div>
+        <div class="row">
+          <label for="route-horizon">Conditions</label>
+          <select id="route-horizon">
+            <option value="0">Current analysis</option>
+            <option value="24" selected>Forecast +24 h</option>
+            <option value="48">Forecast +48 h</option>
+            <option value="72">Forecast +72 h</option>
+          </select>
+        </div>
+        <button id="optimize">Optimise routes</button>
+        <div id="route-status" class="meta"></div>
+      </section>
+
+      <section>
+        <h2>Results</h2>
+        <div id="route-results" class="empty">No route computed yet.</div>
+      </section>
+
+      <section>
+        <h2>Status</h2>
+        <div id="dashboard" class="empty">Loading...</div>
+      </section>
+
+      <p class="disclaimer" id="disclaimer"></p>
+    </aside>
+
+    <div id="map"></div>
+
+    <div id="legend" class="legend hidden">
+      <div class="legend-title" id="legend-title">Sea-ice concentration</div>
+      <div class="legend-bar" id="legend-bar"></div>
+      <div class="legend-scale"><span>0</span><span id="legend-mid">0.5</span><span>1</span></div>
+    </div>
+  </main>
+
+  <script src="vendor/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
