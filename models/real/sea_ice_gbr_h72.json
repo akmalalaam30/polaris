@@ -1,0 +1,141 @@
+{
+  "algorithm": "hist_gradient_boosting",
+  "horizon_hours": 72,
+  "version": "1.0.0",
+  "trained_at": "2026-09-05T11:41:30.564409+00:00",
+  "n_train_samples": 1004084,
+  "n_val_samples": 251908,
+  "n_features": 22,
+  "feature_names": [
+    "conc_t",
+    "conc_lag1",
+    "conc_lag2",
+    "conc_lag3",
+    "conc_lag5",
+    "conc_lag7",
+    "conc_lag14",
+    "delta_1",
+    "delta_3",
+    "delta_7",
+    "mean3",
+    "mean5",
+    "grad_lat",
+    "grad_lon",
+    "roughness",
+    "edge_dist_km",
+    "lat",
+    "lon",
+    "coast_dist_km",
+    "doy_sin",
+    "doy_cos",
+    "horizon_days"
+  ],
+  "metrics": {
+    "n": 251908,
+    "mae": 0.03167101390579292,
+    "rmse": 0.07051607342184738,
+    "r2": 0.9676055472502707,
+    "bias": 0.0032191767000273354,
+    "edge": {
+      "accuracy": 0.9804134842879146,
+      "precision": 0.9714828539718967,
+      "recall": 0.9819187770933151,
+      "f1": 0.9766729389071173,
+      "ice_fraction_true": 0.41758102164282196
+    },
+    "persistence_baseline": {
+      "n": 251908,
+      "mae": 0.03246140495249904,
+      "rmse": 0.07456310938361958,
+      "r2": 0.9637805020701009,
+      "bias": -0.006380512775606975
+    },
+    "skill_vs_persistence": 0.10560734959863205,
+    "selected_candidate": "gbr_lean",
+    "candidates": {
+      "persistence": {
+        "rmse": 0.07456310938361958,
+        "mae": 0.03246140495249904,
+        "skill_vs_persistence": 0.0
+      },
+      "gbr_level": {
+        "rmse": 0.07076226817218445,
+        "mae": 0.032067194177901236,
+        "skill_vs_persistence": 0.09935121108521405
+      },
+      "gbr_delta": {
+        "rmse": 0.07112340933104104,
+        "mae": 0.03216750525406516,
+        "skill_vs_persistence": 0.09013467930829877
+      },
+      "gbr_lean": {
+        "rmse": 0.07051607342184738,
+        "mae": 0.03167101390579292,
+        "skill_vs_persistence": 0.10560734959863205
+      }
+    },
+    "validation_period": {
+      "n_time_steps": 354,
+      "val_fraction": 0.2,
+      "history_start": "2025-08-29T00:00:00+00:00",
+      "history_end": "2026-09-03T00:00:00+00:00"
+    },
+    "data_mode": "real",
+    "n_features_used": 22,
+    "feature_names_used": [
+      "conc_t",
+      "conc_lag1",
+      "conc_lag2",
+      "conc_lag3",
+      "conc_lag5",
+      "conc_lag7",
+      "conc_lag14",
+      "delta_1",
+      "delta_3",
+      "delta_7",
+      "mean3",
+      "mean5",
+      "grad_lat",
+      "grad_lon",
+      "roughness",
+      "edge_dist_km",
+      "lat",
+      "lon",
+      "coast_dist_km",
+      "doy_sin",
+      "doy_cos",
+      "horizon_days"
+    ],
+    "permutation_importance_rmse_increase": {
+      "conc_t": 0.28097,
+      "mean3": 0.08306,
+      "conc_lag7": 0.00598,
+      "mean5": 0.0034,
+      "lat": 0.00223,
+      "conc_lag14": 0.0016,
+      "lon": 0.00127,
+      "doy_cos": 0.00121,
+      "delta_3": 0.00093,
+      "delta_1": 0.00076
+    }
+  },
+  "uncertainty": {
+    "edges": [
+      0.0,
+      0.15,
+      0.4,
+      0.7,
+      0.9,
+      1.01
+    ],
+    "sigmas": [
+      0.02834078766520609,
+      0.18512713991132815,
+      0.15504663770901947,
+      0.07736749481530295,
+      0.040592755707313105
+    ],
+    "overall": 0.07044255469678379
+  },
+  "data_mode": "real"
+}

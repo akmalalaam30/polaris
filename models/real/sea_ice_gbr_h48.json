@@ -1,0 +1,161 @@
+{
+  "algorithm": "hist_gradient_boosting",
+  "horizon_hours": 48,
+  "version": "1.0.0",
+  "trained_at": "2026-09-05T11:40:06.019726+00:00",
+  "n_train_samples": 1007632,
+  "n_val_samples": 251908,
+  "n_features": 32,
+  "feature_names": [
+    "conc_t",
+    "conc_lag1",
+    "conc_lag2",
+    "conc_lag3",
+    "conc_lag5",
+    "conc_lag7",
+    "conc_lag14",
+    "delta_1",
+    "delta_3",
+    "delta_7",
+    "mean3",
+    "mean5",
+    "grad_lat",
+    "grad_lon",
+    "roughness",
+    "edge_dist_km",
+    "lat",
+    "lon",
+    "coast_dist_km",
+    "doy_sin",
+    "doy_cos",
+    "horizon_days",
+    "t2m",
+    "wind_speed",
+    "fdd_3",
+    "fdd_7",
+    "ice_u",
+    "ice_v",
+    "ice_speed",
+    "ice_divergence_per_day",
+    "ice_advection_per_day",
+    "ice_convergence_per_day"
+  ],
+  "metrics": {
+    "n": 251908,
+    "mae": 0.02643415454902102,
+    "rmse": 0.05862556175933021,
+    "r2": 0.9776092603839063,
+    "bias": 0.0020404875388204536,
+    "edge": {
+      "accuracy": 0.9844308239516014,
+      "precision": 0.9786278735632183,
+      "recall": 0.9842098258422693,
+      "f1": 0.9814109126758427,
+      "ice_fraction_true": 0.41758102164282196
+    },
+    "persistence_baseline": {
+      "n": 251908,
+      "mae": 0.026547279541679358,
+      "rmse": 0.06043391637903137,
+      "r2": 0.9762066340781564,
+      "bias": -0.004124578455839915
+    },
+    "skill_vs_persistence": 0.058950310366224556,
+    "selected_candidate": "gbr_level",
+    "candidates": {
+      "persistence": {
+        "rmse": 0.06043391637903137,
+        "mae": 0.026547279541679358,
+        "skill_vs_persistence": 0.0
+      },
+      "gbr_level": {
+        "rmse": 0.05862556175933021,
+        "mae": 0.02643415454902102,
+        "skill_vs_persistence": 0.058950310366224556
+      },
+      "gbr_delta": {
+        "rmse": 0.059980174624692476,
+        "mae": 0.02694717770466416,
+        "skill_vs_persistence": 0.014959758367441012
+      },
+      "gbr_lean": {
+        "rmse": 0.05998165733284039,
+        "mae": 0.02672342805409457,
+        "skill_vs_persistence": 0.014911057434056962
+      }
+    },
+    "validation_period": {
+      "n_time_steps": 355,
+      "val_fraction": 0.2,
+      "history_start": "2025-08-29T00:00:00+00:00",
+      "history_end": "2026-09-03T00:00:00+00:00"
+    },
+    "data_mode": "real",
+    "n_features_used": 32,
+    "feature_names_used": [
+      "conc_t",
+      "conc_lag1",
+      "conc_lag2",
+      "conc_lag3",
+      "conc_lag5",
+      "conc_lag7",
+      "conc_lag14",
+      "delta_1",
+      "delta_3",
+      "delta_7",
+      "mean3",
+      "mean5",
+      "grad_lat",
+      "grad_lon",
+      "roughness",
+      "edge_dist_km",
+      "lat",
+      "lon",
+      "coast_dist_km",
+      "doy_sin",
+      "doy_cos",
+      "horizon_days",
+      "t2m",
+      "wind_speed",
+      "fdd_3",
+      "fdd_7",
+      "ice_u",
+      "ice_v",
+      "ice_speed",
+      "ice_divergence_per_day",
+      "ice_advection_per_day",
+      "ice_convergence_per_day"
+    ],
+    "permutation_importance_rmse_increase": {
+      "conc_t": 0.35919,
+      "mean3": 0.0495,
+      "fdd_7": 0.00423,
+      "t2m": 0.0028,
+      "conc_lag7": 0.00169,
+      "ice_advection_per_day": 0.00157,
+      "doy_cos": 0.00107,
+      "lat": 0.00086,
+      "delta_3": 0.00082,
+      "conc_lag2": 0.00059
+    }
+  },
+  "uncertainty": {
+    "edges": [
+      0.0,
+      0.15,
+      0.4,
+      0.7,
+      0.9,
+      1.01
+    ],
+    "sigmas": [
+      0.02327668142248779,
+      0.15640201756294866,
+      0.1277775171066464,
+      0.0644990156121405,
+      0.042557466130021745
+    ],
+    "overall": 0.058590040981389986
+  },
+  "data_mode": "real"
+}

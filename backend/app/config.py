@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # ---------------------------------------------------------------------------
@@ -57,17 +57,23 @@ class Settings(BaseSettings):
     # PostgreSQL/PostGIS is the production target:
     #   postgresql+psycopg2://user:pass@localhost:5432/polaris
     # SQLite is the zero-dependency default so the backend runs anywhere.
+    #: ``{mode}`` is replaced by DATA_MODE, so demo and real keep separate
+    #: databases and can be switched between without rebuilding either.
     database_url: str = Field(
-        default_factory=lambda: "sqlite:///" + (BACKEND_DIR / "polaris.db").as_posix()
+        default_factory=lambda: "sqlite:///" + (BACKEND_DIR / "polaris_{mode}.db").as_posix()
     )
     database_echo: bool = False
 
     # -- Filesystem -------------------------------------------------------
     data_dir: Path = DATA_DIR
     raw_data_dir: Path = RAW_DATA_DIR
-    processed_data_dir: Path = PROCESSED_DATA_DIR
+    #: ``{mode}`` is substituted here too, so a demo archive can never be fed
+    #: to a real-mode model or vice versa.
+    processed_data_dir: Path = PROCESSED_DATA_DIR / "{mode}"
+    #: Shared, not mode-specific: this holds the bundled NSIDC-derived land
+    #: mask, which is real geography in either mode.
     demo_data_dir: Path = DEMO_DATA_DIR
-    model_path: Path = MODELS_DIR
+    model_path: Path = MODELS_DIR / "{mode}"
 
     # -- External providers ----------------------------------------------
     nsidc_base_url: str = "https://noaadata.apps.nsidc.org/NOAA/G02135"
@@ -159,6 +165,20 @@ class Settings(BaseSettings):
     @classmethod
     def _lower_mode(cls, v):
         return v.lower().strip() if isinstance(v, str) else v
+
+    @model_validator(mode="after")
+    def _expand_mode_placeholder(self):
+        """Substitute ``{mode}`` in the mode-specific paths.
+
+        Demo and real must never share a database, a processed archive or a
+        model directory - a demo-trained model fed real observations would
+        produce plausible nonsense.  Writing ``{mode}`` into any of these three
+        settings keeps them separate; writing a literal path opts out.
+        """
+        self.database_url = self.database_url.replace("{mode}", self.data_mode)
+        self.processed_data_dir = Path(str(self.processed_data_dir).replace("{mode}", self.data_mode))
+        self.model_path = Path(str(self.model_path).replace("{mode}", self.data_mode))
+        return self
 
     @property
     def cors_origin_list(self) -> list[str]:
