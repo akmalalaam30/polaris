@@ -305,3 +305,27 @@ def test_extent_endpoint(client):
     assert all(p["extent_million_km2"] > 0 for p in series)
     stamps = [p["observed_at"] for p in series]
     assert stamps == sorted(stamps)
+
+
+def test_corrupt_artifact_falls_back_to_the_baseline(settings, grid, tmp_path):
+    """A model that cannot be unpickled must not take the endpoint down.
+
+    joblib artifacts are pickled against a specific scikit-learn version, so a
+    checkout with a different version cannot load them. The right answer is a
+    working persistence baseline plus a clear log line, not a 500 on an
+    endpoint that still has perfectly good observations.
+    """
+    from app.models.ml_models import model_artifact_path
+    from app.services import sea_ice_forecasting as sif
+
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    for horizon in settings.forecast_horizons_hours:
+        path = model_artifact_path(broken, settings.sea_ice_model_name, horizon)
+        path.write_bytes(b"this is not a joblib artifact")
+
+    sif.clear_model_cache()
+    result = sif.forecast(24, settings.model_copy(update={"model_path": broken}), grid)
+    assert result.algorithm == "persistence"
+    assert result.prediction[result.mask].size > 0
+    sif.clear_model_cache()

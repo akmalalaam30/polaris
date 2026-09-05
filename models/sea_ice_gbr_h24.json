@@ -1,0 +1,141 @@
+{
+  "algorithm": "hist_gradient_boosting",
+  "horizon_hours": 24,
+  "version": "1.0.0",
+  "trained_at": "2026-09-05T11:11:20.824530+00:00",
+  "n_train_samples": 275058,
+  "n_val_samples": 70623,
+  "n_features": 22,
+  "feature_names": [
+    "conc_t",
+    "conc_lag1",
+    "conc_lag2",
+    "conc_lag3",
+    "conc_lag5",
+    "conc_lag7",
+    "conc_lag14",
+    "delta_1",
+    "delta_3",
+    "delta_7",
+    "mean3",
+    "mean5",
+    "grad_lat",
+    "grad_lon",
+    "roughness",
+    "edge_dist_km",
+    "lat",
+    "lon",
+    "coast_dist_km",
+    "doy_sin",
+    "doy_cos",
+    "horizon_days"
+  ],
+  "metrics": {
+    "n": 70623,
+    "mae": 0.03847707891024521,
+    "rmse": 0.04875785345606101,
+    "r2": 0.9825664703782525,
+    "bias": -0.005172591352574273,
+    "edge": {
+      "accuracy": 0.967786698384379,
+      "precision": 0.9890992654279765,
+      "recall": 0.966973252174581,
+      "f1": 0.9779111201732157,
+      "ice_fraction_true": 0.73742265267689
+    },
+    "persistence_baseline": {
+      "n": 70623,
+      "mae": 0.043167082007410554,
+      "rmse": 0.05848294468284426,
+      "r2": 0.9749184349683009,
+      "bias": -0.0015468481851782366
+    },
+    "skill_vs_persistence": 0.30492656260826256,
+    "selected_candidate": "gbr_lean",
+    "candidates": {
+      "persistence": {
+        "rmse": 0.05848294468284426,
+        "mae": 0.043167082007410554,
+        "skill_vs_persistence": 0.0
+      },
+      "gbr_level": {
+        "rmse": 0.04890497277308478,
+        "mae": 0.038742794696566364,
+        "skill_vs_persistence": 0.3007256802019094
+      },
+      "gbr_delta": {
+        "rmse": 0.049434282021758244,
+        "mae": 0.03928343173680527,
+        "skill_vs_persistence": 0.2855069670274376
+      },
+      "gbr_lean": {
+        "rmse": 0.04875785345606101,
+        "mae": 0.03847707891024521,
+        "skill_vs_persistence": 0.30492656260826256
+      }
+    },
+    "validation_period": {
+      "n_time_steps": 93,
+      "val_fraction": 0.2,
+      "history_start": "2026-02-17T00:00:00+00:00",
+      "history_end": "2026-09-04T00:00:00+00:00"
+    },
+    "data_mode": "demo",
+    "n_features_used": 22,
+    "feature_names_used": [
+      "conc_t",
+      "conc_lag1",
+      "conc_lag2",
+      "conc_lag3",
+      "conc_lag5",
+      "conc_lag7",
+      "conc_lag14",
+      "delta_1",
+      "delta_3",
+      "delta_7",
+      "mean3",
+      "mean5",
+      "grad_lat",
+      "grad_lon",
+      "roughness",
+      "edge_dist_km",
+      "lat",
+      "lon",
+      "coast_dist_km",
+      "doy_sin",
+      "doy_cos",
+      "horizon_days"
+    ],
+    "permutation_importance_rmse_increase": {
+      "conc_t": 0.17147,
+      "mean5": 0.10157,
+      "conc_lag2": 0.04955,
+      "conc_lag14": 0.01244,
+      "lat": 0.00834,
+      "conc_lag5": 0.00827,
+      "delta_1": 0.00512,
+      "conc_lag1": 0.00484,
+      "conc_lag7": 0.00375,
+      "lon": 0.00257
+    }
+  },
+  "uncertainty": {
+    "edges": [
+      0.0,
+      0.15,
+      0.4,
+      0.7,
+      0.9,
+      1.01
+    ],
+    "sigmas": [
+      0.0500300402732304,
+      0.05056733661548335,
+      0.05169277487574243,
+      0.04945394526130795,
+      0.03975487594378725
+    ],
+    "overall": 0.04848270384726902
+  },
+  "data_mode": "demo"
+}

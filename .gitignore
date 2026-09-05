@@ -54,11 +54,14 @@ data/demo/*
 !data/demo/nsidc_land_mask.npz
 
 # --- Trained models ---------------------------------------------------------
-# Retrain with scripts/train_models.py; artifacts are large and machine-specific.
-models/*.joblib
-models/*.json
-backend/models/*.joblib
-backend/models/*.json
+# The .joblib binaries are large, machine-specific and pickled against a
+# particular scikit-learn version, so a clone with a different version cannot
+# load them. Retrain with scripts/train_models.py (about 5 minutes).
+# The ** is required: models live under models/demo/ and models/real/.
+models/**/*.joblib
+backend/models/**/*.joblib
+# The .json model cards ARE tracked - a few kB of human-readable metrics that
+# document what was trained and how well, without any binary payload.
 
 # --- Logs -------------------------------------------------------------------
 logs/

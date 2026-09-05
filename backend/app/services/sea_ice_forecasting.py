@@ -433,6 +433,21 @@ def forecast(
             horizon_hours,
         )
         model = None
+    except Exception as exc:  # noqa: BLE001 - a bad artifact must not take the API down
+        # joblib artifacts are pickled against a specific scikit-learn version.
+        # A checkout with a different version cannot unpickle them, and the
+        # right answer is a working baseline plus a clear instruction - not a
+        # 500 on an endpoint that has perfectly good observations to fall back
+        # on.
+        if not allow_baseline_fallback:
+            raise
+        log.warning(
+            "Trained artifact for %dh could not be loaded (%s: %s); using the persistence "
+            "baseline. Retrain with 'python scripts/train_models.py' to rebuild it for this "
+            "environment.",
+            horizon_hours, exc.__class__.__name__, exc,
+        )
+        model = None
 
     X, mask, names = preprocessing.build_inference_features(
         times, ice, grid, horizon_days, weather=weather, drift=drift,

@@ -82,7 +82,7 @@ Every claim below was executed and measured on this codebase.
 | Navigation graph, A* and Dijkstra | Working |
 | Shortest / safest / POLARIS routes | Working |
 | All REST endpoints, validation and error handling | Working |
-| Automated tests | **203 passing** (`pytest`, ~77 s) |
+| Automated tests | **204 passing** (`pytest`, ~77 s) |
 | Same suite on PostgreSQL 16.4 + PostGIS 3.4 | **verified** — the Postgres path is tested, not assumed |
 | Cold-start latency | Eliminated by a background warm-up: first click 0.86 s total across all endpoints, was 69 s |
 | End-to-end integration test | Working (`tests/test_e2e.py`) |
@@ -276,7 +276,8 @@ POLARIS/
 │   ├── processed/                      NetCDF history archives (gitignored)
 │   └── demo/nsidc_land_mask.npz        bundled NSIDC-derived land mask (1.7 kB)
 │
-├── models/                             trained artifacts + model cards
+├── models/{demo,real}/                 model cards (tracked); .joblib binaries
+│                                       are gitignored - retrain in ~5 min
 ├── notebooks/
 ├── README.md
 └── .gitignore
@@ -1039,7 +1040,7 @@ swapping an endpoint touches one class and its configuration entry.
 
 ```bash
 cd POLARIS/backend
-pytest                          # 203 tests, about 77 s
+pytest                          # 204 tests, about 77 s
 pytest -v
 pytest tests/test_e2e.py        # the integration test alone
 pytest -k "iceberg and physics"
@@ -1048,7 +1049,7 @@ pytest -k "iceberg and physics"
 Current result:
 
 ```
-203 passed in 77.00s
+204 passed in 77.00s
 ```
 
 The suite runs against a throwaway SQLite database and a **reduced analysis
